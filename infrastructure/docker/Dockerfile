@@ -51,8 +51,16 @@ RUN wget -q \
     rm /tmp/livy.zip && \
     mkdir -p "${LIVY_HOME}/logs"
 
-# Copy Livy configuration
+# Copy Livy configuration and log4j settings
 COPY livy.conf ${LIVY_HOME}/conf/livy.conf
+COPY log4j.properties ${LIVY_HOME}/conf/log4j.properties
+
+# Java 11 opens required by Livy's Hadoop 2.7 dependency (KerberosUtil uses
+# internal sun.security APIs via reflection).  These flags suppress the
+# illegal-reflective-access warnings that would otherwise flood the logs.
+ENV LIVY_SERVER_JAVA_OPTS="--add-opens java.base/sun.security.krb5=ALL-UNNAMED \
+  --add-opens java.base/sun.security.util=ALL-UNNAMED \
+  --add-opens java.base/java.lang=ALL-UNNAMED"
 
 # Default working directory is SPARK_HOME so relative commands like
 # "bin/spark-class" work without a full path in docker-compose.

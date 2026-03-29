@@ -125,10 +125,10 @@ Wait until you see `INFO LivyServer - Starting server` in the `livy` container l
 
 ```bash
 # Livy health check
-curl http://localhost:8998/sessions
+curl http://52.139.176.160:8998/sessions
 
 # Spark Master Web UI
-open http://localhost:8080
+open http://52.139.176.160:8080
 ```
 
 ### 4. Install client dependencies (client machine only)
@@ -165,7 +165,7 @@ The two most important endpoints for clients:
 ### Submit a batch job
 
 ```bash
-curl -X POST http://localhost:8998/batches \
+curl -X POST http://52.139.176.160:8998/batches \
   -H "Content-Type: application/json" \
   -d '{
     "file":            "local:///opt/spark-jobs/pi_estimation.py",
@@ -179,13 +179,13 @@ curl -X POST http://localhost:8998/batches \
 ### Poll job state
 
 ```bash
-curl http://localhost:8998/batches/<batch_id>
+curl http://52.139.176.160:8998/batches/<batch_id>
 ```
 
 ### Create an interactive session
 
 ```bash
-curl -X POST http://localhost:8998/sessions \
+curl -X POST http://52.139.176.160:8998/sessions \
   -H "Content-Type: application/json" \
   -d '{"kind": "pyspark"}'
 ```
@@ -193,7 +193,7 @@ curl -X POST http://localhost:8998/sessions \
 ### Execute code in a session
 
 ```bash
-curl -X POST http://localhost:8998/sessions/<session_id>/statements \
+curl -X POST http://52.139.176.160:8998/sessions/<session_id>/statements \
   -H "Content-Type: application/json" \
   -d '{"code": "spark.version"}'
 ```

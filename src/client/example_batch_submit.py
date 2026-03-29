@@ -27,9 +27,9 @@ logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Point this at your Livy server.  When running locally with docker-compose,
-# the default is http://localhost:8998.
+# the default is http://52.139.176.160:8998.
 # ---------------------------------------------------------------------------
-LIVY_HOST = "http://localhost:8998"
+LIVY_HOST = "http://52.139.176.160:8998"
 
 
 # ---------------------------------------------------------------------------

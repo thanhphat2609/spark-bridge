@@ -20,7 +20,7 @@ services:
   # ---------------------------------------------------------------------------
   # Spark Master
   # Manages the cluster and accepts worker registrations on port 7077.
-  # Web UI is available at http://localhost:8080 for monitoring.
+  # Web UI is available at http://52.139.176.160:8080 for monitoring.
   # ---------------------------------------------------------------------------
   spark-master:
     image: spark-bridge          # tag the built image; other services reuse it
