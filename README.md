@@ -61,10 +61,28 @@ spark-bridge/
 │   └── requirements.txt               # Client deps: requests only
 └── infrastructure/
     ├── docker/
-    │   ├── Dockerfile                 # Spark Master + Livy image
-    │   ├── livy.conf                  # Livy server configuration
-    │   └── entrypoint.sh              # Container startup script
-    └── docker-compose.yml             # Full cluster definition
+    │   ├── Dockerfile                 # Builds the single spark-bridge image
+    │   └── livy.conf                  # Livy server configuration
+    └── docker-compose.yml             # Full cluster definition (4 services)
+```
+
+### Docker service topology
+
+All four services use the **same `spark-bridge` image** (built once from `infrastructure/docker/Dockerfile`).  Each service is given an explicit role via its `command` in docker-compose, making the topology immediately readable.
+
+```
+docker-compose up
+      |
+      +-- spark-master    command: spark-class ...Master
+      |       port 8080 (Spark Web UI)
+      |       port 7077 (Spark RPC)
+      |
+      +-- livy            command: livy-server
+      |       port 8998 (REST API)  <-- ONLY port clients ever talk to
+      |       port 4040 (App Web UI)
+      |
+      +-- spark-worker-1  command: spark-class ...Worker spark://spark-master:7077
+      +-- spark-worker-2  command: spark-class ...Worker spark://spark-master:7077
 ```
 
 ### Key separation of concerns
@@ -91,12 +109,16 @@ cd infrastructure
 docker compose up --build
 ```
 
-This starts:
-* `spark-master` -- Spark Master daemon + Livy REST server (port 8998)
-* `spark-worker-1` -- Spark Worker (2 cores, 2 GB RAM)
-* `spark-worker-2` -- Spark Worker (2 cores, 2 GB RAM)
+This builds the `spark-bridge` image once and starts four services:
 
-Wait until you see `INFO LivyServer - Starting server` in the logs (around 15--20 seconds).
+| Service | Role |
+|---|---|
+| `spark-master` | Spark Master daemon |
+| `livy` | Apache Livy REST server -- the client entry point |
+| `spark-worker-1` | Spark Worker (2 cores, 2 GB RAM) |
+| `spark-worker-2` | Spark Worker (2 cores, 2 GB RAM) |
+
+Wait until you see `INFO LivyServer - Starting server` in the `livy` container logs (around 20--25 seconds).
 
 ### 3. Verify the cluster is up
 

@@ -28,16 +28,17 @@ RUN wget -q \
     rm /tmp/livy.zip && \
     mkdir -p "${LIVY_HOME}/logs"
 
-# Copy Livy configuration and startup script
+# Copy Livy configuration
 COPY livy.conf ${LIVY_HOME}/conf/livy.conf
-COPY entrypoint.sh /opt/entrypoint.sh
-RUN chmod +x /opt/entrypoint.sh
 
-# Ports:
+# Ports (documented here for reference; exposed via docker-compose per service):
 #   8080 - Spark Master Web UI
 #   7077 - Spark Master RPC
-#   8998 - Livy REST API  <-- clients only need this port
+#   8998 - Livy REST API  <-- the only port clients need
 #   4040 - Spark Application Web UI (active jobs)
-EXPOSE 8080 7077 8998 4040
+#   8081 - Spark Worker Web UI
+EXPOSE 8080 7077 8998 4040 8081
 
-ENTRYPOINT ["/opt/entrypoint.sh"]
+# No ENTRYPOINT defined here.
+# Each service in docker-compose provides its own command, which makes the
+# role of each container explicit: spark-master, livy, worker-1, worker-2.
