@@ -1,0 +1,5 @@
+# Client-side dependencies only.
+# The client machine does NOT need Spark, Java, or Hadoop installed.
+# Only this one library is required to submit jobs to the remote cluster via Livy.
+
+requests>=2.28.0
