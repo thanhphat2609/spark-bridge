@@ -39,6 +39,7 @@ The client only ever speaks to **port 8998** (Livy).  It never needs to know tha
 |---|---|
 | Processing Engine | Apache Spark 3.5.1 (Standalone Mode) |
 | REST Gateway | Apache Livy 0.7.1 |
+| Container Base | eclipse-temurin:11-jre-jammy (OpenJDK 11 on Ubuntu 22.04) |
 | Container Runtime | Docker + Docker Compose |
 | Client Language | Python 3 (`requests` only) |
 | Job Language | PySpark |

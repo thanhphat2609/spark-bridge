@@ -23,7 +23,7 @@ services:
   # Web UI is available at http://localhost:8080 for monitoring.
   # ---------------------------------------------------------------------------
   spark-master:
-    image: spark-bridge          # single shared image for the whole cluster
+    image: spark-bridge          # tag the built image; other services reuse it
     container_name: spark-master
     hostname: spark-master
     command: bin/spark-class org.apache.spark.deploy.master.Master
@@ -54,9 +54,9 @@ services:
     volumes:
       - ../src/jobs:/opt/spark-jobs   # Job scripts submitted via local:// paths
     environment:
-      - SPARK_HOME=/opt/bitnami/spark
+      - SPARK_HOME=/opt/spark
       - LIVY_HOME=/opt/livy
-      - JAVA_HOME=/opt/bitnami/java
+      - PYSPARK_PYTHON=python3
     networks:
       - spark-net
 
@@ -71,7 +71,6 @@ services:
     depends_on:
       - spark-master
     environment:
-      - SPARK_MODE=worker
       - SPARK_WORKER_CORES=2
       - SPARK_WORKER_MEMORY=2g
       - SPARK_MASTER_URL=spark://172.28.0.2:7077
@@ -91,7 +90,6 @@ services:
     depends_on:
       - spark-master
     environment:
-      - SPARK_MODE=worker
       - SPARK_WORKER_CORES=2
       - SPARK_WORKER_MEMORY=2g
       - SPARK_MASTER_URL=spark://172.28.0.2:7077
