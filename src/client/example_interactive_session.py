@@ -28,7 +28,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-LIVY_HOST = "http://52.139.176.160:8998"
+LIVY_HOST = "http://40.139.179.159:8998"
 
 
 def print_output(label: str, output: dict) -> None:
