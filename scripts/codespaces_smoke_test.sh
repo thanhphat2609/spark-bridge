@@ -12,6 +12,13 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 COMPOSE="docker compose -f infrastructure/yarn/codespaces/docker-compose.yml"
 
+if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then
+  echo "ERROR: Docker is not available in this environment."
+  echo "  Codespaces: Ctrl/Cmd+Shift+P -> 'Codespaces: Rebuild Container' (uses .devcontainer/devcontainer.json)."
+  echo "  If it still fails, check 'Codespaces: View Creation Log' for a recovery-mode error."
+  exit 1
+fi
+
 if [[ "${1:-}" == "down" ]]; then
   $COMPOSE --profile client down -v
   exit 0
