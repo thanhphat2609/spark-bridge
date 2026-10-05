@@ -7,7 +7,7 @@ This script runs on the Spark cluster and is submitted via Livy.
 Submit via Livy batch endpoint:
     POST http://<livy-host>:8998/batches
     {
-        "file": "local:///opt/spark-jobs/word_count.py",
+        "file": "<STORAGE_ROOT>/jobs/word_count.py",
         "name": "WordCount"
     }
 """

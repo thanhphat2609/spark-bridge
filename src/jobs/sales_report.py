@@ -8,7 +8,7 @@ but this self-contained version demonstrates the Spark computation logic.
 Submit via Livy batch endpoint:
     POST http://<livy-host>:8998/batches
     {
-        "file": "local:///opt/spark-jobs/sales_report.py",
+        "file": "<STORAGE_ROOT>/jobs/sales_report.py",
         "name": "SalesReport",
         "executorMemory": "1g"
     }

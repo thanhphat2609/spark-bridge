@@ -8,7 +8,7 @@ and does not need to be present on the client machine.
 Submit via Livy batch endpoint:
     POST http://<livy-host>:8998/batches
     {
-        "file": "local:///opt/spark-jobs/pi_estimation.py",
+        "file": "<STORAGE_ROOT>/jobs/pi_estimation.py",
         "args": ["2000000"],
         "name": "PiEstimation"
     }

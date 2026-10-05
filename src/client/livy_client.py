@@ -12,7 +12,7 @@ Usage (batch):
 
     client = LivyClient("http://<livy-host>:8998")
     job = client.submit_batch(
-        file="local:///opt/spark-jobs/pi_estimation.py",
+        file="abfss://spark@<account>.dfs.core.windows.net/spark-bridge/jobs/pi_estimation.py",
         args=["1000000"],
         name="PiEstimation",
     )
@@ -264,7 +264,7 @@ class LivyClient:
         Args:
             file:             URI of the Python script, readable by the cluster,
                               e.g. 'abfss://spark@acct.dfs.core.windows.net/spark-bridge/jobs/pi.py'
-                              or 'local:///opt/spark-jobs/pi.py'.
+                              or 'file:///data/shared/jobs/pi.py' (Codespaces).
             args:             Command-line arguments forwarded to the script.
             conf:             Spark configuration overrides.
             name:             Application name shown in the Spark UI.

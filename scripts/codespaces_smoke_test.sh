@@ -10,7 +10,7 @@
 # =============================================================================
 set -euo pipefail
 cd "$(dirname "$0")/.."
-COMPOSE="docker compose -f infrastructure/yarn/codespaces/docker-compose.yml"
+COMPOSE="docker compose -f infrastructure/codespaces/docker-compose.yml"
 
 if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then
   echo "ERROR: Docker is not available in this environment."

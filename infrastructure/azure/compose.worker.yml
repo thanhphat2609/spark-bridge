@@ -6,7 +6,7 @@
 #
 # Add more workers = create another VM from the same recipe and run this file.
 #
-#   cd infrastructure/yarn/azure
+#   cd infrastructure/azure
 #   cp .env.example .env   # SAME .env as the master (MASTER_HOST must point to sb-master)
 #   docker compose -f compose.worker.yml up -d --build
 # =============================================================================
@@ -15,7 +15,7 @@ services:
   nodemanager:
     image: spark-bridge-yarn:azure
     build:
-      context: ..                     # infrastructure/yarn
+      context: ..                     # infrastructure
       dockerfile: azure/Dockerfile
     container_name: sb-nodemanager
     network_mode: host

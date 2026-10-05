@@ -4,13 +4,12 @@
 
 **SparkBridge** turns a few cheap VMs into a small, Dataproc-style Spark cluster. **Apache Livy** is the only entry point (HTTP on port 8998), **YARN** schedules Spark, and **object storage (Azure Blob / ADLS Gen2)** holds the code, data and logs. There is **no HDFS**. Clients such as Airflow, AI agents or plain Python scripts submit and monitor jobs with nothing but the `requests` library: no local Spark, Java or Hadoop.
 
-The same project runs in three environments:
+The same project runs in two environments:
 
 | Environment | Purpose | Where | Storage |
 |---|---|---|---|
 | **QA: GitHub Codespaces** | "Does it build, launch and run a job?" | 1 host, containers mimic the 3 VMs | Shared Docker volume (`file:///data/shared`) |
 | **Demo: Azure VMs** | Real job submission against Azure Blob | 3 VMs: client, master, worker | Azure ADLS Gen2 (`abfss://`) |
-| Legacy: Standalone | Original setup, kept for rollback | 1 host | Mounted folder |
 
 ---
 
@@ -28,7 +27,7 @@ The same project runs in three environments:
 10. [Port Reference](#10-port-reference)
 11. [Cost](#11-cost)
 12. [Troubleshooting](#12-troubleshooting)
-13. [Legacy: Standalone Mode](#13-legacy-standalone-mode)
+13. [Rollback to the Standalone Version](#13-rollback-to-the-standalone-version)
 14. [The Senior Perspective](#14-the-senior-perspective-why-this-matters)
 
 ---
@@ -146,28 +145,24 @@ spark-bridge/
 │   │   └── sales_report.py
 │   ├── client/                           # runs on ANY machine (requests only)
 │   │   ├── livy_client.py                # reusable LivyClient (queue, pyFiles, logs)
-│   │   ├── run_demo.py                   # YARN demo: submits PiEstimation + SalesETL
-│   │   ├── example_batch_submit.py       # legacy Standalone examples
-│   │   └── example_interactive_session.py
+│   │   ├── run_demo.py                   # demo: submits PiEstimation + SalesETL
+│   │   └── example_interactive_session.py  # send PySpark snippets via a Livy session
 │   └── requirements.txt
 └── infrastructure/
-    ├── yarn/                             # <-- YARN profile (this README)
-    │   ├── common/
-    │   │   ├── entrypoint.sh             # roles: resourcemanager | nodemanager | history | livy | smoke-storage
-    │   │   └── conf/*.tpl                # core-site, yarn-site, capacity-scheduler, spark-defaults, livy
-    │   ├── codespaces/
-    │   │   ├── Dockerfile                # no cloud connector, smaller image
-    │   │   └── docker-compose.yml        # all roles on one host + client container
-    │   └── azure/
-    │       ├── Dockerfile                # + Azure ABFS connector
-    │       ├── compose.master.yml        # run on sb-master
-    │       ├── compose.worker.yml        # run on sb-worker-1
-    │       └── .env.example              # copy to .env and fill in
-    ├── docker/                           # legacy Standalone image
-    └── docker-compose.yml                # legacy Standalone cluster
+    ├── common/                           # shared by both images
+    │   ├── entrypoint.sh                 # roles: resourcemanager | nodemanager | history | livy | smoke-storage
+    │   └── conf/*.tpl                    # core-site, yarn-site, capacity-scheduler, spark-defaults, livy
+    ├── codespaces/                       # QA
+    │   ├── Dockerfile                    # no cloud connector, smaller image
+    │   └── docker-compose.yml            # all roles on one host + client container
+    └── azure/                            # demo
+        ├── Dockerfile                    # + Azure ABFS connector
+        ├── compose.master.yml            # run on sb-master
+        ├── compose.worker.yml            # run on sb-worker-1
+        └── .env.example                  # copy to .env and fill in
 ```
 
-Both YARN images share `infrastructure/yarn/common/`, and every config file is rendered from environment variables at container start. The **only** difference between the two Dockerfiles is the Azure connector block. If you bump a version `ARG`, change it in both files.
+Both images share `infrastructure/common/` (the Docker build context is `infrastructure/`), and every config file is rendered from environment variables at container start. The **only** difference between the two Dockerfiles is the Azure connector block. If you bump a version `ARG`, change it in both files.
 
 ---
 
@@ -177,7 +172,7 @@ Both YARN images share `infrastructure/yarn/common/`, and every config file is r
 |---|---|---|:-:|:-:|
 | 1 | Push this repo (with the new files) to GitHub | `git push` | ✅ | ✅ |
 | 2 | Pick a globally unique **storage account name** (3–24 lowercase letters/digits) | `ACCT=` in step B1 | – | ✅ |
-| 3 | Fill in `.env` from `.env.example`: `MASTER_HOST`, `AZURE_STORAGE_ACCOUNT`, `STORAGE_ROOT`, `AZURE_STORAGE_KEY` | `infrastructure/yarn/azure/.env` | – | ✅ |
+| 3 | Fill in `.env` from `.env.example`: `MASTER_HOST`, `AZURE_STORAGE_ACCOUNT`, `STORAGE_ROOT`, `AZURE_STORAGE_KEY` | `infrastructure/azure/.env` | – | ✅ |
 | 4 | Match worker sizing to the worker VM: `NM_MEMORY_MB`, `NM_VCORES` | same `.env` | – | ✅ |
 | 5 | Your repo URL in `git clone` (private repo: use a GitHub PAT or `gh auth login`) | steps B3/B5 | – | ✅ |
 | 6 | Azure region (`LOC=`) and auto-shutdown time | step B1 | – | ✅ |
@@ -244,7 +239,7 @@ Open the **Ports** tab in Codespaces and click:
 Useful commands:
 
 ```bash
-COMPOSE="docker compose -f infrastructure/yarn/codespaces/docker-compose.yml"
+COMPOSE="docker compose -f infrastructure/codespaces/docker-compose.yml"
 $COMPOSE ps                               # container status
 $COMPOSE logs -f livy                     # follow Livy logs
 $COMPOSE run --rm client                  # re-run the demo jobs
@@ -350,7 +345,7 @@ Check after reconnecting: `docker compose version`.
 
 ```bash
 git clone https://github.com/<your-user>/spark-bridge.git
-cd spark-bridge/infrastructure/yarn/azure
+cd spark-bridge/infrastructure/azure
 cp .env.example .env
 nano .env
 ```
@@ -383,7 +378,7 @@ docker compose -f compose.master.yml ps                                 # 3 serv
 
 ```bash
 git clone https://github.com/<your-user>/spark-bridge.git
-cd spark-bridge/infrastructure/yarn/azure
+cd spark-bridge/infrastructure/azure
 cp .env.example .env
 nano .env               # paste EXACTLY the same values as on sb-master
 
@@ -493,7 +488,7 @@ Then in `.env` set `AZURE_AUTH_MODE=msi`, remove `AZURE_STORAGE_KEY`, and restar
 
 ## 8. Configuration Reference
 
-All settings are environment variables (`infrastructure/yarn/azure/.env` on Azure, the `environment:` block in `infrastructure/yarn/codespaces/docker-compose.yml` for Codespaces). `common/entrypoint.sh` renders them into the Hadoop, Spark and Livy configs at container start.
+All settings are environment variables (`infrastructure/azure/.env` on Azure, the `environment:` block in `infrastructure/codespaces/docker-compose.yml` for Codespaces). `common/entrypoint.sh` renders them into the Hadoop, Spark and Livy configs at container start.
 
 | Variable | Codespaces | Azure example | Meaning |
 |---|---|---|---|
@@ -614,24 +609,20 @@ A 3-hour demo costs well under **1 USD** in compute. Keep it cheap:
 | `UnknownHostException: sb-worker-1` | Hostnames not resolvable. All VMs must be in the same VNet (Azure DNS), and `MASTER_HOST` must be correct. |
 | Livy: `Local path ... cannot be added to user sessions` | Codespaces only: the `file://` path must be under `/data/shared/`. |
 | Interactive session hangs in `starting` | The driver on the worker can't reach Livy on `MASTER_HOST:10000-10010`. |
-| Codespaces build very slow or fails to download | The Apache archive throttles at times. Re-run, or pass another mirror with `--build-arg APACHE_MIRROR=...`. |
+| Build fails or is very slow downloading Spark / Hadoop / Livy | `archive.apache.org` throttles big files. The build already resumes, retries, and falls back to the Huawei Cloud mirror, and every file is SHA-512 verified. Re-run the build (finished layers are cached), or put a faster mirror first: `docker compose ... build --build-arg APACHE_MIRRORS="https://<mirror>/apache https://archive.apache.org/dist"`. |
 | Where is my `print()` output? | In the driver container log: RM UI → app → **Logs**, or `docker exec sb-resourcemanager yarn logs -applicationId <id>`. |
 
 ---
 
-## 13. Legacy: Standalone Mode
+## 13. Rollback to the Standalone Version
 
-The original Spark Standalone stack (`infrastructure/docker-compose.yml`, Livy 0.7.1, drivers on the master) is kept unchanged for rollback and local experiments:
+The original Spark Standalone stack (Livy 0.7.1, drivers on the master) was removed from `main` to keep one code path. It's preserved under the git tag **`v1-standalone`**:
 
 ```bash
-cd infrastructure
-docker compose up --build
-cd ../src/client
-LIVY_URL=http://localhost:8998 python example_batch_submit.py
-LIVY_URL=http://localhost:8998 python example_interactive_session.py
+git checkout v1-standalone          # browse or run the old stack
+cd infrastructure && docker compose up --build
+git checkout main                   # back to the YARN version
 ```
-
-Rollback from YARN = stop the YARN stacks and start this one. Job code works in both modes; only the file paths change (`local:///opt/spark-jobs/...` here).
 
 ---
 

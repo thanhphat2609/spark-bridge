@@ -12,8 +12,8 @@
 #          (file:///data/shared) stands in for Azure Blob. No cloud account needed.
 #
 # Usage (from repo root):
-#   docker compose -f infrastructure/yarn/codespaces/docker-compose.yml up -d --build
-#   docker compose -f infrastructure/yarn/codespaces/docker-compose.yml run --rm client
+#   docker compose -f infrastructure/codespaces/docker-compose.yml up -d --build
+#   docker compose -f infrastructure/codespaces/docker-compose.yml run --rm client
 # or simply:  bash scripts/codespaces_smoke_test.sh
 # =============================================================================
 
@@ -40,7 +40,7 @@ services:
   resourcemanager:
     <<: *common
     build:
-      context: ..                       # infrastructure/yarn
+      context: ..                       # infrastructure
       dockerfile: codespaces/Dockerfile
     container_name: sb-resourcemanager
     hostname: master
@@ -114,9 +114,9 @@ services:
       STORAGE_ROOT: file:///data/shared
       YARN_QUEUE: etl
     volumes:
-      - ../../../src:/app/src:ro
-      - ../../../data:/app/data:ro
-      - ../../../scripts:/app/scripts:ro
+      - ../../src:/app/src:ro
+      - ../../data:/app/data:ro
+      - ../../scripts:/app/scripts:ro
       - shared:/data/shared
     # "Upload" jobs + sample data to storage, then submit through Livy
     command: >
