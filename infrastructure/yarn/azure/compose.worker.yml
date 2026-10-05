@@ -1,0 +1,31 @@
+# =============================================================================
+# SparkBridge on YARN - AZURE  ·  VM "sb-worker-1"  (compute)
+#
+# Runs: YARN NodeManager + Spark shuffle service.
+# Spark drivers (cluster deploy mode) AND executors run in YARN containers here.
+#
+# Add more workers = create another VM from the same recipe and run this file.
+#
+#   cd infrastructure/yarn/azure
+#   cp .env.example .env   # SAME .env as the master (MASTER_HOST must point to sb-master)
+#   docker compose -f compose.worker.yml up -d --build
+# =============================================================================
+
+services:
+  nodemanager:
+    image: spark-bridge-yarn:azure
+    build:
+      context: ..                     # infrastructure/yarn
+      dockerfile: azure/Dockerfile
+    container_name: sb-nodemanager
+    network_mode: host
+    env_file: .env
+    restart: unless-stopped
+    command: ["nodemanager"]
+    volumes:
+      # Shuffle + spill on the VM's FREE local temp SSD (/mnt on Azure Ubuntu images).
+      # Data here is disposable - that is exactly what YARN local-dirs are.
+      - ${YARN_LOCAL_DIR_HOST:-/mnt/yarn}:/data/yarn
+    logging:
+      driver: json-file
+      options: { max-size: "50m", max-file: "3" }

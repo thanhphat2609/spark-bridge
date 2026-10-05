@@ -1,226 +1,652 @@
-# SparkBridge: Standalone API Gateway
+# SparkBridge: Dataproc-lite on YARN, behind a REST API
 
 **"Decoupling Spark Job Submission from Infrastructure Constraints."**
 
-**SparkBridge** is a high-performance architectural solution designed to break the traditional dependency on local Spark environments. By leveraging **Apache Livy** as a RESTful gateway for **Spark Standalone**, this project enables remote clients -- such as AI Agents, Airflow Workers, or lightweight local scripts -- to dispatch and monitor large-scale data processing jobs without requiring local Spark binaries or Java installations.
+**SparkBridge** turns a few cheap VMs into a small, Dataproc-style Spark cluster. **Apache Livy** is the only entry point (HTTP on port 8998), **YARN** schedules Spark, and **object storage (Azure Blob / ADLS Gen2)** holds the code, data and logs. There is **no HDFS**. Clients such as Airflow, AI agents or plain Python scripts submit and monitor jobs with nothing but the `requests` library: no local Spark, Java or Hadoop.
+
+The same project runs in three environments:
+
+| Environment | Purpose | Where | Storage |
+|---|---|---|---|
+| **QA: GitHub Codespaces** | "Does it build, launch and run a job?" | 1 host, containers mimic the 3 VMs | Shared Docker volume (`file:///data/shared`) |
+| **Demo: Azure VMs** | Real job submission against Azure Blob | 3 VMs: client, master, worker | Azure ADLS Gen2 (`abfss://`) |
+| Legacy: Standalone | Original setup, kept for rollback | 1 host | Mounted folder |
 
 ---
 
-## Architecture: The "Stateless" Approach
+## Table of Contents
 
-Unlike the traditional `spark-submit` method which requires a thick client, **SparkBridge** follows a decoupled, API-driven pattern. This separates the **Control Plane** (where the logic lives) from the **Data Plane** (where the processing happens).
+1. [Architecture](#1-architecture)
+2. [Tech Stack](#2-tech-stack)
+3. [Project Structure](#3-project-structure)
+4. [What You Need to Change Before Running](#4-what-you-need-to-change-before-running)
+5. [Part A: Run the QA Demo on GitHub Codespaces](#5-part-a-run-the-qa-demo-on-github-codespaces)
+6. [Part B: Run the Demo on Azure VMs](#6-part-b-run-the-demo-on-azure-vms)
+7. [How a Job Flows](#7-how-a-job-flows)
+8. [Configuration Reference](#8-configuration-reference)
+9. [Livy REST API Reference](#9-livy-rest-api-reference)
+10. [Port Reference](#10-port-reference)
+11. [Cost](#11-cost)
+12. [Troubleshooting](#12-troubleshooting)
+13. [Legacy: Standalone Mode](#13-legacy-standalone-mode)
+14. [The Senior Perspective](#14-the-senior-perspective-why-this-matters)
+
+---
+
+## 1. Architecture
+
+### Target architecture (Azure)
 
 ```mermaid
 graph LR
-    A[Client: AI Agent / Airflow / Script] -- "HTTP POST (JSON)" --> B[Apache Livy - Port 8998]
-    B -- "Internal Dispatch" --> C[Spark Master - Port 7077]
-    C -- "Orchestrate Task" --> D[Spark Worker 1]
-    C -- "Orchestrate Task" --> E[Spark Worker 2]
-    D -.-> F[(Data Source: Azure Blob / S3)]
-    E -.-> F
+    subgraph CLIENT [VM sb-client - Airflow-lite]
+        C[Python script<br/>requests only]
+        AZ[az CLI<br/>upload jobs + data]
+    end
+
+    subgraph MASTER [VM sb-master - Control plane]
+        L[Apache Livy :8998]
+        RM[YARN ResourceManager :8088]
+        SHS[Spark History Server :18080]
+    end
+
+    subgraph WORKER [VM sb-worker-1 - Compute]
+        NM[YARN NodeManager<br/>+ Spark shuffle service]
+        D[Spark driver + executors<br/>in YARN containers]
+    end
+
+    C -- "HTTP POST /batches" --> L
+    L -- "spark-submit<br/>yarn / cluster mode" --> RM
+    RM --> NM
+    NM --> D
+    AZ -- "jobs/, data/" --> OBJ
+    D <-- "read / write data" --> OBJ[(Azure Blob ADLS Gen2<br/>jobs · data · staging<br/>spark-history · yarn-logs)]
+    NM -- "aggregated logs" --> OBJ
+    SHS --> OBJ
 ```
 
-The client only ever speaks to **port 8998** (Livy).  It never needs to know that Spark exists.
+The client only ever talks to **port 8998** (Livy) and never needs to know Spark exists.
+
+### Why YARN instead of Spark Standalone
+
+| Problem with Standalone | What YARN gives us |
+|---|---|
+| PySpark can't run in `cluster` deploy mode, so every driver runs on the master/Livy VM, which becomes the memory bottleneck. | Drivers run in YARN containers on the **worker**. The master only hosts small control-plane daemons. |
+| No queues: every job competes first-come, first-served. | **Capacity Scheduler queues**: `default`, `etl`, `adhoc`. |
+| Limited dynamic allocation. | YARN **Spark shuffle service**, so dynamic allocation is safe (executors scale 0 → N). |
+| Logs disappear with containers. | **Log aggregation** to object storage, plus the Spark History Server. |
+| Config differs from Dataproc. | Same model as Dataproc (`spark.master=yarn`), so jobs and configs are portable. |
+
+### Why no HDFS
+
+Data already lives in object storage. Dropping HDFS removes the NameNode/DataNode daemons, saves RAM and removes a single point of failure. Everything YARN and Spark need to share between nodes goes to storage instead:
+
+```
+${STORAGE_ROOT}/                  e.g. abfss://spark@<account>.dfs.core.windows.net/spark-bridge
+├── jobs/            PySpark scripts (uploaded by the client / CI)
+├── data/            demo data: raw/sales.csv -> curated/sales_by_category/
+├── staging/         spark.yarn.stagingDir (small per-job config zip)
+├── spark-history/   Spark event logs -> History Server
+└── yarn-logs/       YARN aggregated container logs
+```
+
+### Dataproc parity
+
+| Dataproc | SparkBridge |
+|---|---|
+| Master node (YARN RM) | `sb-master`: RM + Livy + History Server |
+| Primary workers (NodeManager) | `sb-worker-1` (add more VMs to scale) |
+| Jobs API | Livy REST API |
+| `gs://` for jobs and data | `abfss://` for jobs, data, staging and logs |
+| Component Gateway | SSH tunnel to 8088 / 18080 |
+| Autoscaling, init actions | Not in scope (scale manually by adding worker VMs) |
+
+### How Codespaces mimics the 3 VMs
+
+```
+GitHub Codespace (one Docker host)
+├── "master" network namespace   resourcemanager + history + livy   (= sb-master)
+├── worker                       nodemanager                        (= sb-worker-1)
+├── client (on demand)           python + requests                  (= sb-client)
+└── volume "shared"              mounted at /data/shared            (= Azure Blob)
+```
 
 ---
 
-## Key Value Propositions
-
-* **Zero-Client Footprint:** Execute Spark jobs from any environment (Docker, Cloud Functions, CI runners) using only the `requests` library or `curl`.
-* **Infrastructure Decoupling:** Eliminate the need to maintain Spark/Hadoop binaries on orchestration nodes (e.g., Airflow workers), reducing maintenance overhead.
-* **Centralized Job Management:** Leverage Livy to manage sessions, track job states, and retrieve logs via standard HTTP endpoints.
-* **Production-Grade Scalability:** Easily scale the Spark Standalone cluster by adding workers without touching a single line of client-side code.
-
----
-
-## Tech Stack
+## 2. Tech Stack
 
 | Layer | Technology |
 |---|---|
-| Processing Engine | Apache Spark 3.5.1 (Standalone Mode) |
-| REST Gateway | Apache Livy 0.7.1 |
-| Container Base | eclipse-temurin:11-jre-jammy (OpenJDK 11 on Ubuntu 22.04) |
-| Container Runtime | Docker + Docker Compose |
-| Client Language | Python 3 (`requests` only) |
-| Job Language | PySpark |
+| Processing engine | Apache Spark 3.5.1 (`bin-hadoop3`) |
+| Resource manager | Apache Hadoop YARN 3.3.4 (RM + NM only, no HDFS). Same version as Spark's bundled Hadoop client |
+| REST gateway | Apache Livy 0.8.0 (Scala 2.12 / Spark 3 build) |
+| Storage connector | `hadoop-azure` (ABFS) on both the Hadoop and Spark classpaths |
+| Container base | `eclipse-temurin:11-jre-jammy` (OpenJDK 11 on Ubuntu 22.04) |
+| Runtime | Docker + Docker Compose |
+| Client | Python 3 + `requests` |
+| Jobs | PySpark |
 
 ---
 
-## Project Structure
+## 3. Project Structure
 
 ```
 spark-bridge/
+├── .devcontainer/devcontainer.json       # Codespaces: 4 cores / 16 GB + Docker-in-Docker
+├── data/sample/sales.csv                 # demo input data
+├── scripts/
+│   ├── codespaces_smoke_test.sh          # Codespaces: build, start, wait, submit -> PASS/FAIL
+│   ├── upload_local_storage.sh           # Codespaces: "upload" jobs/data into the shared volume
+│   └── deploy_jobs_azure.sh              # Azure: upload jobs/data to Blob with az CLI
 ├── src/
-│   ├── jobs/                          # PySpark scripts -- run ON the cluster
-│   │   ├── pi_estimation.py           # Monte Carlo Pi estimation
-│   │   ├── word_count.py              # Word frequency analysis
-│   │   └── sales_report.py            # Sales aggregation report
-│   ├── client/                        # Client code -- runs on ANY machine
-│   │   ├── livy_client.py             # Reusable LivyClient class
-│   │   ├── example_batch_submit.py    # Submit .py scripts via Livy batch API
-│   │   └── example_interactive_session.py  # Send code snippets via Livy sessions
-│   └── requirements.txt               # Client deps: requests only
+│   ├── jobs/                             # PySpark scripts -- run ON the cluster
+│   │   ├── pi_estimation.py              # compute-only smoke job
+│   │   ├── sales_etl.py                  # CSV in storage -> Parquet in storage
+│   │   ├── word_count.py
+│   │   └── sales_report.py
+│   ├── client/                           # runs on ANY machine (requests only)
+│   │   ├── livy_client.py                # reusable LivyClient (queue, pyFiles, logs)
+│   │   ├── run_demo.py                   # YARN demo: submits PiEstimation + SalesETL
+│   │   ├── example_batch_submit.py       # legacy Standalone examples
+│   │   └── example_interactive_session.py
+│   └── requirements.txt
 └── infrastructure/
-    ├── docker/
-    │   ├── Dockerfile                 # Builds the single spark-bridge image
-    │   └── livy.conf                  # Livy server configuration
-    └── docker-compose.yml             # Full cluster definition (4 services)
+    ├── yarn/                             # <-- YARN profile (this README)
+    │   ├── common/
+    │   │   ├── entrypoint.sh             # roles: resourcemanager | nodemanager | history | livy | smoke-storage
+    │   │   └── conf/*.tpl                # core-site, yarn-site, capacity-scheduler, spark-defaults, livy
+    │   ├── codespaces/
+    │   │   ├── Dockerfile                # no cloud connector, smaller image
+    │   │   └── docker-compose.yml        # all roles on one host + client container
+    │   └── azure/
+    │       ├── Dockerfile                # + Azure ABFS connector
+    │       ├── compose.master.yml        # run on sb-master
+    │       ├── compose.worker.yml        # run on sb-worker-1
+    │       └── .env.example              # copy to .env and fill in
+    ├── docker/                           # legacy Standalone image
+    └── docker-compose.yml                # legacy Standalone cluster
 ```
 
-### Docker service topology
-
-All four services use the **same `spark-bridge` image** (built once from `infrastructure/docker/Dockerfile`).  Each service is given an explicit role via its `command` in docker-compose, making the topology immediately readable.
-
-```
-docker-compose up
-      |
-      +-- spark-master    command: spark-class ...Master
-      |       port 8080 (Spark Web UI)
-      |       port 7077 (Spark RPC)
-      |
-      +-- livy            command: livy-server
-      |       port 8998 (REST API)  <-- ONLY port clients ever talk to
-      |       port 4040 (App Web UI)
-      |
-      +-- spark-worker-1  command: spark-class ...Worker spark://spark-master:7077
-      +-- spark-worker-2  command: spark-class ...Worker spark://spark-master:7077
-```
-
-### Key separation of concerns
-
-| Directory | Runs on | Spark/Java needed? |
-|---|---|---|
-| `src/jobs/` | Spark cluster (inside container) | Yes (provided by image) |
-| `src/client/` | Any client machine | No -- `pip install requests` is enough |
+Both YARN images share `infrastructure/yarn/common/`, and every config file is rendered from environment variables at container start. The **only** difference between the two Dockerfiles is the Azure connector block. If you bump a version `ARG`, change it in both files.
 
 ---
 
-## Quick Start
+## 4. What You Need to Change Before Running
 
-### 1. Prerequisites
+| # | What | Where | Codespaces | Azure |
+|---|---|---|:-:|:-:|
+| 1 | Push this repo (with the new files) to GitHub | `git push` | ✅ | ✅ |
+| 2 | Pick a globally unique **storage account name** (3–24 lowercase letters/digits) | `ACCT=` in step B1 | – | ✅ |
+| 3 | Fill in `.env` from `.env.example`: `MASTER_HOST`, `AZURE_STORAGE_ACCOUNT`, `STORAGE_ROOT`, `AZURE_STORAGE_KEY` | `infrastructure/yarn/azure/.env` | – | ✅ |
+| 4 | Match worker sizing to the worker VM: `NM_MEMORY_MB`, `NM_VCORES` | same `.env` | – | ✅ |
+| 5 | Your repo URL in `git clone` (private repo: use a GitHub PAT or `gh auth login`) | steps B3/B5 | – | ✅ |
+| 6 | Azure region (`LOC=`) and auto-shutdown time | step B1 | – | ✅ |
 
-* Docker Desktop (or Docker Engine + Compose plugin)
-* Python 3.8+ on your client machine
-* No Spark, no Java required on the client
+Nothing else needs editing: no hostnames or keys are hardcoded. `.env` is in `.gitignore`, so **never commit it**.
 
-### 2. Build and start the cluster
+Commit and push the project first (both demos clone it from GitHub):
+
+```bash
+git add .
+git commit -m "Add YARN profile for Codespaces QA and Azure demo"
+git push origin main
+```
+
+---
+
+## 5. Part A: Run the QA Demo on GitHub Codespaces
+
+**Goal:** prove the image builds and a job runs end-to-end through Livy → YARN, without any Azure account.
+
+### A1. Create the Codespace
+
+1. On GitHub, open the repo → **Code** → **Codespaces** → **⋯** → **New with options**.
+2. Branch `main`, machine type **4-core / 16 GB** (the devcontainer requests it; 2-core / 8 GB also works but is slower).
+3. Wait for the container to build. It installs Docker-in-Docker and `pip install -r src/requirements.txt`.
+
+### A2. Run the smoke test
+
+In the Codespace terminal:
+
+```bash
+bash scripts/codespaces_smoke_test.sh
+```
+
+What it does:
+
+| Step | Action | Time |
+|---|---|---|
+| 1 | Builds `spark-bridge-yarn:codespaces` (downloads Spark, Hadoop, Livy, ~1.2 GB) | 5–10 min first time |
+| 2 | Starts `resourcemanager`, `history`, `livy` (hostname `master`) and `nodemanager` (hostname `worker`) | ~30 s |
+| 3 | Waits until YARN is up, the NodeManager is registered, and Livy and History answer | ~30–60 s |
+| 4 | Runs the `client` container: copies `src/jobs/*.py` + `data/sample/sales.csv` into the shared volume, then submits **PiEstimation** and **SalesETL** through Livy | 1–2 min |
+
+### A3. Check the result
+
+Expected end of output:
+
+```
+================ DEMO RESULT ================
+  PiEstimation    PASS
+  SalesETL        PASS
+=============================================
+```
+
+Open the **Ports** tab in Codespaces and click:
+
+| Port | What to check |
+|---|---|
+| 8088 (YARN RM UI) | Both applications are `FINISHED / SUCCEEDED`; click an app → **Logs** to see the driver's `print()` / `df.show()` output |
+| 18080 (Spark History) | Both apps are listed with their stages |
+| 8042 (NodeManager UI) | The worker node and its containers |
+| 8998 (Livy) | Batch list with `success` state |
+
+Useful commands:
+
+```bash
+COMPOSE="docker compose -f infrastructure/yarn/codespaces/docker-compose.yml"
+$COMPOSE ps                               # container status
+$COMPOSE logs -f livy                     # follow Livy logs
+$COMPOSE run --rm client                  # re-run the demo jobs
+docker exec sb-resourcemanager yarn application -list -appStates ALL
+docker exec sb-resourcemanager ls -R /data/shared/data/curated    # Parquet output
+```
+
+You can also submit from the Codespace terminal itself (after the client container has uploaded the files once):
+
+```bash
+LIVY_URL=http://localhost:8998 STORAGE_ROOT=file:///data/shared python src/client/run_demo.py
+```
+
+### A4. Clean up
+
+```bash
+bash scripts/codespaces_smoke_test.sh down     # stop containers and delete volumes
+```
+
+Then **stop the Codespace** (GitHub → Codespaces → ⋯ → Stop). It bills by core-hour while running.
+
+**Done when:** both jobs PASS, the apps show `SUCCEEDED` in the RM UI, and they're listed in the History Server.
+
+---
+
+## 6. Part B: Run the Demo on Azure VMs
+
+**Goal:** 3 VMs in one VNet. The client submits through Livy, the job reads and writes **real Azure Blob storage**, and drivers and executors run on the worker only.
+
+```
+                      VNet 10.10.0.0/16 · subnet 10.10.1.0/24 · NSG: SSH from YOUR IP only
+ ┌──────────────────┐    :8998     ┌────────────────────────────┐        ┌──────────────────────┐
+ │ sb-client        │ ───────────► │ sb-master                  │ ◄────► │ sb-worker-1          │
+ │ B1s              │   (private)  │ B2ms                       │  YARN  │ B2ms                 │
+ │ python + az CLI  │              │ RM · Livy · History Server │        │ NodeManager+shuffle  │
+ └────────┬─────────┘              └─────────────┬──────────────┘        └──────────┬───────────┘
+          │ upload jobs/data                     │ staging, event logs              │ read/write data, logs
+          └──────────────────────────► Storage account (ADLS Gen2) · container "spark" ◄┘
+```
+
+Prerequisites on your laptop: [Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli), `az login`, and an SSH client.
+
+### B1. Provision Azure resources (from your laptop, once)
+
+```bash
+# ---- change these -------------------------------------------------------------
+RG=rg-sparkbridge
+LOC=southeastasia
+ACCT=sparkbridge$RANDOM                  # storage account: globally unique, lowercase
+MY_IP=$(curl -s https://ifconfig.me)     # your public IP, the only one allowed to SSH
+# --------------------------------------------------------------------------------
+
+az group create -n $RG -l $LOC
+
+# Network + one NSG for all VMs: SSH only from your IP.
+# VM-to-VM traffic (YARN, Livy, shuffle) is allowed by the default "AllowVnetInBound" rule.
+az network vnet create -g $RG -n vnet-sb --address-prefix 10.10.0.0/16 \
+  --subnet-name snet-sb --subnet-prefix 10.10.1.0/24
+az network nsg create -g $RG -n nsg-sb
+az network nsg rule create -g $RG --nsg-name nsg-sb -n allow-ssh-from-me --priority 1000 \
+  --access Allow --protocol Tcp --direction Inbound \
+  --source-address-prefixes $MY_IP --destination-port-ranges 22
+
+# Storage: ADLS Gen2 (hierarchical namespace ON) -- required for abfss://
+az storage account create -g $RG -n $ACCT -l $LOC \
+  --sku Standard_LRS --kind StorageV2 --hns true
+KEY=$(az storage account keys list -g $RG -n $ACCT --query [0].value -o tsv)
+az storage container create --account-name $ACCT --account-key $KEY -n spark
+echo "ACCT=$ACCT"; echo "KEY=$KEY"                  # copy both, you need them in B3-B5
+
+# 3 Ubuntu 22.04 VMs. Public IPs are only for SSH + outbound downloads;
+# the NSG blocks everything from the internet except SSH from MY_IP.
+COMMON="-g $RG --image Ubuntu2204 --vnet-name vnet-sb --subnet snet-sb --nsg nsg-sb \
+        --admin-username azureuser --generate-ssh-keys"
+az vm create $COMMON -n sb-client   --size Standard_B1s
+az vm create $COMMON -n sb-master   --size Standard_B2ms
+az vm create $COMMON -n sb-worker-1 --size Standard_B2ms
+
+# Cost guard: shut all VMs down every day at 15:00 UTC (22:00 Vietnam time)
+for vm in sb-client sb-master sb-worker-1; do
+  az vm auto-shutdown -g $RG -n $vm --time 1500
+done
+
+# Public IPs for SSH
+az vm list-ip-addresses -g $RG -o table
+```
+
+> **Security:** never open 8998, 8088 or 18080 to the internet. Livy has no authentication, and anyone who can reach it can run code on your cluster. Use the SSH tunnel in step B6 to view the UIs.
+
+### B2. Install Docker on sb-master and sb-worker-1
+
+SSH to **each** of the two VMs (`ssh azureuser@<public-ip>`) and run:
+
+```bash
+curl -fsSL https://get.docker.com | sudo sh
+sudo usermod -aG docker $USER
+exit            # log out and SSH back in so the docker group applies
+```
+
+Check after reconnecting: `docker compose version`.
+
+### B3. Start the master (sb-master)
+
+```bash
+git clone https://github.com/<your-user>/spark-bridge.git
+cd spark-bridge/infrastructure/yarn/azure
+cp .env.example .env
+nano .env
+```
+
+Fill in `.env`:
+
+```bash
+MASTER_HOST=sb-master                    # VM name; Azure DNS resolves it inside the VNet
+STORAGE_BACKEND=azure
+AZURE_STORAGE_ACCOUNT=<ACCT from B1>
+STORAGE_ROOT=abfss://spark@<ACCT>.dfs.core.windows.net/spark-bridge
+AZURE_AUTH_MODE=key
+AZURE_STORAGE_KEY=<key from B1>
+NM_MEMORY_MB=6144                        # B2ms worker; use 13312 for B4ms
+NM_VCORES=2                              # B2ms worker; use 4 for B4ms
+```
+
+Build, check storage access, start:
+
+```bash
+docker compose -f compose.master.yml build                              # ~5-10 min
+docker compose -f compose.master.yml run --rm resourcemanager smoke-storage
+docker compose -f compose.master.yml up -d
+docker compose -f compose.master.yml ps                                 # 3 services Up / healthy
+```
+
+`smoke-storage` must end with `Storage smoke test PASSED`. It writes to `abfss://` with both the Hadoop client (what YARN uses) and the Spark client (what jobs use), so any connector or credential problem shows up here, not in the middle of a demo.
+
+### B4. Start the worker (sb-worker-1)
+
+```bash
+git clone https://github.com/<your-user>/spark-bridge.git
+cd spark-bridge/infrastructure/yarn/azure
+cp .env.example .env
+nano .env               # paste EXACTLY the same values as on sb-master
+
+docker compose -f compose.worker.yml build
+docker compose -f compose.worker.yml run --rm nodemanager smoke-storage
+docker compose -f compose.worker.yml up -d
+```
+
+Verify the worker registered with YARN (on either VM):
+
+```bash
+curl -s http://sb-master:8088/ws/v1/cluster/metrics | grep -o '"activeNodes":[0-9]*'
+# -> "activeNodes":1
+```
+
+The worker keeps shuffle and spill files on the VM's free temporary SSD (`/mnt/yarn`).
+
+### B5. Upload jobs and submit from the client (sb-client, "Airflow-lite")
+
+```bash
+sudo apt-get update && sudo apt-get install -y python3-pip git
+curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
+
+git clone https://github.com/<your-user>/spark-bridge.git
+cd spark-bridge
+pip install -r src/requirements.txt          # only "requests" -- no Spark, no Java
+
+# 1) Upload jobs + demo data to Blob (what CI will do later on merge to main)
+export AZURE_STORAGE_ACCOUNT=<ACCT>
+export AZURE_STORAGE_KEY=<key>
+export AZURE_STORAGE_CONTAINER=spark
+export STORAGE_PREFIX=spark-bridge
+bash scripts/deploy_jobs_azure.sh
+
+# 2) Submit through Livy (private network)
+export LIVY_URL=http://sb-master:8998
+export STORAGE_ROOT=abfss://spark@$AZURE_STORAGE_ACCOUNT.dfs.core.windows.net/spark-bridge
+export YARN_QUEUE=etl
+python3 src/client/run_demo.py
+```
+
+Expected:
+
+```
+================ DEMO RESULT ================
+  PiEstimation    PASS
+  SalesETL        PASS
+=============================================
+```
+
+### B6. Verify and show the demo
+
+Open the UIs on your laptop through an SSH tunnel to the master:
+
+```bash
+ssh -L 8998:localhost:8998 -L 8088:localhost:8088 -L 18080:localhost:18080 azureuser@<sb-master-public-ip>
+```
+
+| Check | Where |
+|---|---|
+| Both apps `SUCCEEDED`, in queue `etl` | http://localhost:8088 |
+| Driver ran on **sb-worker-1**, not the master | RM UI → app → attempt → container host |
+| Job stdout (`df.show()` of the sales report) | RM UI → app → **Logs**, or History |
+| Event logs / history | http://localhost:18080 |
+| Output Parquet in Blob | Azure Portal → storage account → Storage browser → `spark/spark-bridge/data/curated/sales_by_category/` |
+| Aggregated logs and event logs in Blob | `spark/spark-bridge/yarn-logs/` and `spark/spark-bridge/spark-history/` |
+| Master memory stays flat while jobs run | `docker stats` on sb-master |
+
+### B7. Stop / clean up
+
+```bash
+# Pause (keeps everything, stops compute billing):
+az vm deallocate -g $RG -n sb-worker-1 --no-wait
+az vm deallocate -g $RG -n sb-master   --no-wait
+az vm deallocate -g $RG -n sb-client   --no-wait
+# Resume: az vm start ... then `docker compose ... up -d` starts automatically (restart: unless-stopped)
+
+# Delete everything when the demo is over:
+az group delete -n $RG --yes --no-wait
+```
+
+> A VM that is only **stopped** (shut down from inside the OS) still bills for compute. Use **deallocate**.
+
+### B8. Optional: use the VMs' managed identity instead of a storage key
+
+```bash
+for vm in sb-master sb-worker-1; do
+  PID=$(az vm identity assign -g $RG -n $vm --query systemAssignedIdentity -o tsv)
+  az role assignment create --assignee $PID --role "Storage Blob Data Contributor" \
+    --scope $(az storage account show -g $RG -n $ACCT --query id -o tsv)
+done
+```
+
+Then in `.env` set `AZURE_AUTH_MODE=msi`, remove `AZURE_STORAGE_KEY`, and restart both stacks. No secret is stored anywhere.
+
+---
+
+## 7. How a Job Flows
+
+1. **Client** → `POST /batches` on Livy with `file=<STORAGE_ROOT>/jobs/sales_etl.py`, `args=[input, output]`, `queue=etl`.
+2. **Livy** runs `spark-submit --master yarn --deploy-mode cluster`. Spark's jars are **not** uploaded: they're already in the image on every node (`spark.yarn.jars=local:/opt/spark/jars/*`, PySpark via `PYSPARK_ARCHIVES_PATH=local:...`). Only a small `__spark_conf__.zip` goes to `<STORAGE_ROOT>/staging`.
+3. **YARN ResourceManager** starts the ApplicationMaster + **driver** in a container on the **worker**. Executors scale from 0 to `SPARK_MAX_EXECUTORS` with dynamic allocation; the Spark shuffle service runs inside the NodeManager.
+4. The job reads `data/raw/sales.csv` and writes `data/curated/...` directly in storage.
+5. On finish, the event log goes to `<STORAGE_ROOT>/spark-history` (History Server) and container logs go to `<STORAGE_ROOT>/yarn-logs`. Livy reports `success`, and the client prints PASS.
+
+---
+
+## 8. Configuration Reference
+
+All settings are environment variables (`infrastructure/yarn/azure/.env` on Azure, the `environment:` block in `infrastructure/yarn/codespaces/docker-compose.yml` for Codespaces). `common/entrypoint.sh` renders them into the Hadoop, Spark and Livy configs at container start.
+
+| Variable | Codespaces | Azure example | Meaning |
+|---|---|---|---|
+| `MASTER_HOST` | `master` | `sb-master` | Host of the RM / Livy / History Server |
+| `STORAGE_BACKEND` | `local` | `azure` | Which storage credentials to configure |
+| `STORAGE_ROOT` | `file:///data/shared` | `abfss://spark@<acct>.dfs.core.windows.net/spark-bridge` | Root for jobs, data, staging, logs |
+| `AZURE_STORAGE_ACCOUNT` | – | `<acct>` | Storage account name |
+| `AZURE_AUTH_MODE` | – | `key` / `msi` | Account key or VM managed identity |
+| `AZURE_STORAGE_KEY` | – | `<key>` | Only for `key` mode |
+| `NM_MEMORY_MB` / `NM_VCORES` | `4096` / `4` | `6144` / `2` | Resources the worker offers to YARN |
+| `YARN_AM_RESOURCE_PERCENT` | `0.8` | `0.5` | Share of cluster memory for job ApplicationMasters (Hadoop's default 0.1 leaves small clusters stuck in `ACCEPTED`) |
+| `SPARK_DRIVER_MEMORY` / `SPARK_EXECUTOR_MEMORY` | `512m` | `1g` | Defaults, overridable per Livy request |
+| `SPARK_MAX_EXECUTORS` | `2` | `4` | Dynamic allocation upper bound |
+| `YARN_LOCAL_DIR_HOST` | – | `/mnt/yarn` | Worker shuffle/spill dir (Azure temp SSD) |
+| `LIVY_LOCAL_DIR_WHITELIST` | `/data/shared/` | – | Lets Livy accept `file://` job paths (Codespaces only) |
+
+YARN queues (`common/conf/capacity-scheduler.xml.tpl`): `default` 40%, `etl` 40%, `adhoc` 20%. Each can borrow up to 100% when the cluster is idle.
+
+---
+
+## 9. Livy REST API Reference
+
+Inside the VNet (or through the SSH tunnel, replacing `sb-master` with `localhost`):
+
+### Submit a batch job (code in Blob)
+
+```bash
+ROOT=abfss://spark@<acct>.dfs.core.windows.net/spark-bridge
+curl -X POST http://sb-master:8998/batches -H "Content-Type: application/json" -d '{
+  "file":  "'$ROOT'/jobs/sales_etl.py",
+  "args":  ["'$ROOT'/data/raw/sales.csv", "'$ROOT'/data/curated/sales_by_category"],
+  "name":  "SalesETL",
+  "queue": "etl",
+  "driverMemory":   "1g",
+  "executorMemory": "1g"
+}'
+```
+
+### Poll job state / read logs
+
+```bash
+curl http://sb-master:8998/batches/<batch_id>          # state, appId, YARN UI link
+curl http://sb-master:8998/batches/<batch_id>/log      # spark-submit / YARN client log
+```
+
+### Interactive session
+
+```bash
+curl -X POST http://sb-master:8998/sessions -H "Content-Type: application/json" \
+  -d '{"kind": "pyspark", "queue": "adhoc"}'
+curl -X POST http://sb-master:8998/sessions/<session_id>/statements -H "Content-Type: application/json" \
+  -d '{"code": "spark.version"}'
+```
+
+### From Python (`requests` only)
+
+```python
+from livy_client import LivyClient
+
+client = LivyClient("http://sb-master:8998")
+job = client.submit_batch(
+    file=f"{ROOT}/jobs/pi_estimation.py",
+    args=["1000000"],
+    queue="etl",
+)
+print(job.wait())            # 'success'
+print(job.get_info()["appId"])
+```
+
+---
+
+## 10. Port Reference
+
+| Port | Service | VM | Who accesses it |
+|---|---|---|---|
+| 8998 | Livy REST API | master | Clients (**the only port clients need**), VNet only |
+| 8088 | YARN ResourceManager UI | master | Operators via SSH tunnel |
+| 8030–8033 | YARN RM RPC | master | NodeManagers, Livy (internal) |
+| 18080 | Spark History Server | master | Operators via SSH tunnel |
+| 10000–10010 | Livy RSC callback | master | Interactive-session drivers on workers (internal) |
+| 8041 / 8042 | NodeManager RPC / UI | worker | RM (internal) / operators |
+| 7337 | Spark shuffle service | worker | Executors (internal) |
+| 22 | SSH | all | Your IP only |
+
+---
+
+## 11. Cost
+
+Pay-as-you-go ballpark (check the [Azure pricing calculator](https://azure.microsoft.com/pricing/calculator/) for your region):
+
+| Resource | Size | ≈ USD / hour |
+|---|---|---|
+| sb-client | B1s (1 vCPU / 1 GB) | ~0.01 |
+| sb-master | B2ms (2 vCPU / 8 GB) | ~0.08 |
+| sb-worker-1 | B2ms (2 vCPU / 8 GB) | ~0.08 |
+| 3 public IPs | Standard | ~0.015 total |
+| Storage | a few MB | ~0 |
+
+A 3-hour demo costs well under **1 USD** in compute. Keep it cheap:
+
+- **Deallocate** VMs when idle and keep the daily auto-shutdown.
+- Put the storage account in the **same region** as the VMs (no egress charges).
+- For bigger runs, make workers **Spot VMs** (`--priority Spot --eviction-policy Deallocate`); YARN retries lost containers.
+- `az group delete -n rg-sparkbridge` when finished.
+- On Codespaces, **stop** the Codespace after the test.
+
+---
+
+## 12. Troubleshooting
+
+| Symptom | Likely cause / fix |
+|---|---|
+| App stuck in `ACCEPTED` | Not enough memory for the ApplicationMaster. Check `activeNodes` ≥ 1, then raise `NM_MEMORY_MB` / `YARN_AM_RESOURCE_PERCENT` or lower `SPARK_DRIVER_MEMORY`. |
+| `activeNodes: 0` | NodeManager can't reach `MASTER_HOST:8031`. Check `docker logs sb-nodemanager`, the `.env` values, and that both VMs are in the same VNet. |
+| NodeManager `UNHEALTHY` | Local disk almost full: `docker system prune`. The threshold is already 99%. |
+| `ClassNotFoundException ... azurebfs` | You built with the Codespaces Dockerfile. Use `azure/Dockerfile` (the compose files already do). |
+| `403` / `AuthorizationPermissionMismatch` on `abfss://` | Wrong key, or the managed identity lacks *Storage Blob Data Contributor* (role assignments take ~5 min). |
+| `UnknownHostException: sb-worker-1` | Hostnames not resolvable. All VMs must be in the same VNet (Azure DNS), and `MASTER_HOST` must be correct. |
+| Livy: `Local path ... cannot be added to user sessions` | Codespaces only: the `file://` path must be under `/data/shared/`. |
+| Interactive session hangs in `starting` | The driver on the worker can't reach Livy on `MASTER_HOST:10000-10010`. |
+| Codespaces build very slow or fails to download | The Apache archive throttles at times. Re-run, or pass another mirror with `--build-arg APACHE_MIRROR=...`. |
+| Where is my `print()` output? | In the driver container log: RM UI → app → **Logs**, or `docker exec sb-resourcemanager yarn logs -applicationId <id>`. |
+
+---
+
+## 13. Legacy: Standalone Mode
+
+The original Spark Standalone stack (`infrastructure/docker-compose.yml`, Livy 0.7.1, drivers on the master) is kept unchanged for rollback and local experiments:
 
 ```bash
 cd infrastructure
 docker compose up --build
+cd ../src/client
+LIVY_URL=http://localhost:8998 python example_batch_submit.py
+LIVY_URL=http://localhost:8998 python example_interactive_session.py
 ```
 
-This builds the `spark-bridge` image once and starts four services:
-
-| Service | Role |
-|---|---|
-| `spark-master` | Spark Master daemon |
-| `livy` | Apache Livy REST server -- the client entry point |
-| `spark-worker-1` | Spark Worker (2 cores, 2 GB RAM) |
-| `spark-worker-2` | Spark Worker (2 cores, 2 GB RAM) |
-
-Wait until you see `INFO LivyServer - Starting server` in the `livy` container logs (around 20--25 seconds).
-
-### 3. Verify the cluster is up
-
-```bash
-# Livy health check
-curl http://40.139.179.159:8998/sessions
-
-# Spark Master Web UI
-open http://40.139.179.159:8080
-```
-
-### 4. Install client dependencies (client machine only)
-
-```bash
-cd src
-pip install -r requirements.txt
-```
-
-### 5. Submit a batch job
-
-```bash
-cd src/client
-python example_batch_submit.py
-```
-
-The script submits three batch jobs (Pi Estimation, Word Count, Sales Report) and polls Livy for completion.  No local Spark installation is used.
-
-### 6. Run an interactive session
-
-```bash
-cd src/client
-python example_interactive_session.py
-```
-
-This sends PySpark code snippets as plain strings over HTTP and retrieves the output.  Ideal for notebooks, REPL-style workflows, or dynamic job generation.
+Rollback from YARN = stop the YARN stacks and start this one. Job code works in both modes; only the file paths change (`local:///opt/spark-jobs/...` here).
 
 ---
 
-## Livy REST API Reference
-
-The two most important endpoints for clients:
-
-### Submit a batch job
-
-```bash
-curl -X POST http://40.139.179.159:8998/batches \
-  -H "Content-Type: application/json" \
-  -d '{
-    "file":            "local:///opt/spark-jobs/pi_estimation.py",
-    "args":            ["1000000"],
-    "name":            "PiEstimation",
-    "executorMemory":  "512m",
-    "driverMemory":    "512m"
-  }'
-```
-
-### Poll job state
-
-```bash
-curl http://40.139.179.159:8998/batches/<batch_id>
-```
-
-### Create an interactive session
-
-```bash
-curl -X POST http://40.139.179.159:8998/sessions \
-  -H "Content-Type: application/json" \
-  -d '{"kind": "pyspark"}'
-```
-
-### Execute code in a session
-
-```bash
-curl -X POST http://40.139.179.159:8998/sessions/<session_id>/statements \
-  -H "Content-Type: application/json" \
-  -d '{"code": "spark.version"}'
-```
-
----
-
-## Port Reference
-
-| Port | Service | Who accesses it |
-|---|---|---|
-| 8998 | Livy REST API | Clients (the only port clients need) |
-| 8080 | Spark Master Web UI | Operators (monitoring) |
-| 7077 | Spark Master RPC | Workers (internal only) |
-| 4040 | Spark App Web UI | Operators (active job debugging) |
-
----
-
-## The Senior Perspective: Why This Matters
+## 14. The Senior Perspective: Why This Matters
 
 In modern data platform engineering, **operational simplicity** is as important as raw performance.
 
-Maintaining a consistent Spark environment across multiple developer machines and orchestration servers is a logistical nightmare. **SparkBridge** transforms Spark into a **Shared Service**. By abstracting the submission process behind a REST API, we enable:
+Maintaining a consistent Spark environment across multiple developer machines and orchestration servers is a logistical nightmare. **SparkBridge** turns Spark into a **shared service**, and the YARN profile turns a handful of cheap VMs into a "Dataproc-lite":
 
-1. **Strict Security:** Firewall rules only need to allow HTTP traffic to the Livy gateway.
-2. **Universal Compatibility:** Any language that can make an HTTP request (Python, Go, Node.js, PHP) can trigger heavy-duty data processing.
-3. **Cleaner CI/CD:** Deploying new Spark jobs becomes a simple API call rather than a complex shell-script execution.
-4. **Reduced Toil:** Spark upgrades, tuning, and scaling are cluster concerns only -- no client changes needed.
+1. **Strict security:** clients need one private HTTP port. Nothing is exposed to the internet.
+2. **Universal compatibility:** any language that can make an HTTP request (Python, Go, Node.js) can trigger heavy data processing.
+3. **Stateless compute:** with no HDFS, all state lives in object storage, so VMs can be deallocated, resized or replaced without data loss.
+4. **Cheaper by design:** small control plane, drivers on workers, dynamic allocation, Spot-friendly workers, pay only while running.
+5. **Cleaner CI/CD:** deploying a job is an upload to Blob plus an API call. No shell access to the cluster.
+6. **Portable:** the same `spark.master=yarn` model as Dataproc/EMR/HDInsight, so jobs move between platforms unchanged.
 
 ---
 
@@ -228,6 +654,6 @@ Maintaining a consistent Spark environment across multiple developer machines an
 
 Feel free to reach out for architectural discussions or contribute to the repo.
 
-
 ## Project Demo
+
 You can watch the full demo of this Spark Bridge on YouTube: [Watch here](https://youtu.be/MxiVsNYgirs)

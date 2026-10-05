@@ -15,6 +15,7 @@ Run:
 """
 
 import logging
+import os
 import sys
 
 from livy_client import LivyClient
@@ -26,10 +27,10 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Point this at your Livy server.  When running locally with docker-compose,
-# the default is http://40.139.179.159:8998.
+# Point this at your Livy server via the LIVY_URL environment variable.
+# When running locally with docker-compose, the default is http://localhost:8998.
 # ---------------------------------------------------------------------------
-LIVY_HOST = "http://40.139.179.159:8998"
+LIVY_HOST = os.environ.get("LIVY_URL", "http://localhost:8998")
 
 
 # ---------------------------------------------------------------------------

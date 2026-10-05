@@ -1,0 +1,55 @@
+# =============================================================================
+# SparkBridge on YARN - AZURE  ·  VM "sb-master"  (control plane)
+#
+# Runs: YARN ResourceManager + Spark History Server + Apache Livy
+# No drivers, no executors, no HDFS here -> a small VM (B2ms, 2 vCPU / 8 GB) is enough.
+#
+# host networking: YARN / Spark use dynamic ports and must advertise the VM's
+# real hostname, which Azure DNS resolves for every VM in the same VNet.
+#
+#   cd infrastructure/yarn/azure
+#   cp .env.example .env   # fill in storage account + MASTER_HOST
+#   docker compose -f compose.master.yml up -d --build
+# =============================================================================
+
+x-common: &common
+  image: spark-bridge-yarn:azure
+  network_mode: host
+  env_file: .env
+  restart: unless-stopped
+  logging:
+    driver: json-file
+    options: { max-size: "50m", max-file: "3" }
+
+services:
+  resourcemanager:
+    <<: *common
+    build:
+      context: ..                     # infrastructure/yarn
+      dockerfile: azure/Dockerfile
+    container_name: sb-resourcemanager
+    command: ["resourcemanager"]
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8088/ws/v1/cluster/info"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+
+  history:
+    <<: *common
+    container_name: sb-history
+    command: ["history"]
+    depends_on:
+      resourcemanager: { condition: service_healthy }
+
+  livy:
+    <<: *common
+    container_name: sb-livy
+    command: ["livy"]
+    depends_on:
+      resourcemanager: { condition: service_healthy }
+    volumes:
+      - livy-recovery:/var/livy/recovery   # Livy restart does not lose running batches
+
+volumes:
+  livy-recovery:

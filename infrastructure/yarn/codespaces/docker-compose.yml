@@ -1,0 +1,130 @@
+# =============================================================================
+# SparkBridge on YARN - CODESPACES (QA launch test, everything on one host)
+#
+# Mirrors the 3-VM Azure layout with containers:
+#
+#   "master" network namespace  ->  resourcemanager + history + livy
+#                                   (shared hostname = master, like VM1 with host networking)
+#   worker                      ->  nodemanager                    (like VM2)
+#   client                      ->  python + requests, submits to Livy (like the Airflow-lite VM)
+#
+# Storage: a shared Docker volume mounted at /data/shared on master + worker + client
+#          (file:///data/shared) stands in for Azure Blob. No cloud account needed.
+#
+# Usage (from repo root):
+#   docker compose -f infrastructure/yarn/codespaces/docker-compose.yml up -d --build
+#   docker compose -f infrastructure/yarn/codespaces/docker-compose.yml run --rm client
+# or simply:  bash scripts/codespaces_smoke_test.sh
+# =============================================================================
+
+x-common: &common
+  image: spark-bridge-yarn:codespaces
+  environment:
+    MASTER_HOST: master
+    STORAGE_BACKEND: local
+    STORAGE_ROOT: file:///data/shared
+    # Sized for a 4-core / 16 GB codespace (works on 2-core / 8 GB too)
+    NM_MEMORY_MB: "4096"
+    NM_VCORES: "4"
+    YARN_AM_RESOURCE_PERCENT: "0.8"
+    SPARK_DRIVER_MEMORY: 512m
+    SPARK_EXECUTOR_MEMORY: 512m
+    SPARK_MAX_EXECUTORS: "2"
+    LIVY_LOCAL_DIR_WHITELIST: /data/shared/
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # VM1 equivalent - owns the "master" network namespace and publishes its ports
+  # ---------------------------------------------------------------------------
+  resourcemanager:
+    <<: *common
+    build:
+      context: ..                       # infrastructure/yarn
+      dockerfile: codespaces/Dockerfile
+    container_name: sb-resourcemanager
+    hostname: master
+    networks:
+      default:
+        aliases: [master]   # hostname alone is not resolvable by other containers
+    command: ["resourcemanager"]
+    ports:
+      - "8998:8998"     # Livy REST API   (the only port clients need)
+      - "8088:8088"     # YARN RM UI
+      - "18080:18080"   # Spark History Server
+    volumes:
+      - shared:/data/shared
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8088/ws/v1/cluster/info"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  history:
+    <<: *common
+    container_name: sb-history
+    network_mode: "service:resourcemanager"
+    command: ["history"]
+    depends_on:
+      resourcemanager: { condition: service_healthy }
+    volumes:
+      - shared:/data/shared
+
+  livy:
+    <<: *common
+    container_name: sb-livy
+    network_mode: "service:resourcemanager"
+    command: ["livy"]
+    depends_on:
+      resourcemanager: { condition: service_healthy }
+    volumes:
+      - shared:/data/shared
+      - livy-recovery:/var/livy/recovery
+
+  # ---------------------------------------------------------------------------
+  # VM2 equivalent - drivers AND executors run here (cluster deploy mode)
+  # ---------------------------------------------------------------------------
+  nodemanager:
+    <<: *common
+    container_name: sb-worker
+    hostname: worker
+    networks:
+      default:
+        aliases: [worker]   # RM / Livy reach the NM and drivers by this name
+    command: ["nodemanager"]
+    depends_on:
+      resourcemanager: { condition: service_healthy }
+    ports:
+      - "8042:8042"     # NodeManager UI (container logs while running)
+    volumes:
+      - shared:/data/shared
+      - yarn-local:/data/yarn
+
+  # ---------------------------------------------------------------------------
+  # Airflow-lite VM equivalent - only python + requests, no Spark/Java.
+  # Started on demand:  docker compose ... run --rm client
+  # ---------------------------------------------------------------------------
+  client:
+    image: python:3.11-slim
+    container_name: sb-client
+    profiles: ["client"]
+    working_dir: /app
+    environment:
+      LIVY_URL: http://master:8998
+      STORAGE_ROOT: file:///data/shared
+      YARN_QUEUE: etl
+    volumes:
+      - ../../../src:/app/src:ro
+      - ../../../data:/app/data:ro
+      - ../../../scripts:/app/scripts:ro
+      - shared:/data/shared
+    # "Upload" jobs + sample data to storage, then submit through Livy
+    command: >
+      sh -c "pip install -q -r src/requirements.txt &&
+             sh scripts/upload_local_storage.sh &&
+             python src/client/run_demo.py"
+
+volumes:
+  shared:          # stands in for the Azure Blob container
+  livy-recovery:
+  yarn-local:

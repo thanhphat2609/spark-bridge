@@ -4,3 +4,5 @@ spark_bridge_env/
 # Ignore Python bytecode files.
 __pycache__/
 *.pyc
+# Environment files with secrets (copy from .env.example)
+.env

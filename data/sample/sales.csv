@@ -1,0 +1,15 @@
+order_date,category,product,unit_price,quantity
+2026-09-01,Electronics,Laptop,1200.00,5
+2026-09-01,Electronics,Phone,800.00,10
+2026-09-02,Electronics,Tablet,500.00,8
+2026-09-02,Electronics,Headphones,180.00,15
+2026-09-03,Clothing,Jacket,120.00,25
+2026-09-03,Clothing,Shoes,90.00,40
+2026-09-04,Clothing,Hat,30.00,60
+2026-09-04,Clothing,Bag,75.00,20
+2026-09-05,Food,Coffee,15.00,100
+2026-09-05,Food,Tea,10.00,80
+2026-09-06,Food,Chocolate,5.00,200
+2026-09-06,Electronics,Laptop,1150.00,3
+2026-09-07,Clothing,Shoes,85.00,30
+2026-09-07,Food,Coffee,14.50,120

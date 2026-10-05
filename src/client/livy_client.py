@@ -51,10 +51,14 @@ class LivyBatchJob:
         response = self._client._get(f"/batches/{self.batch_id}")
         return response.get("state", "unknown")
 
-    def get_log(self) -> List[str]:
-        """Return the accumulated log lines for this batch job."""
-        response = self._client._get(f"/batches/{self.batch_id}/log")
+    def get_log(self, size: int = 100) -> List[str]:
+        """Return the last `size` log lines for this batch job."""
+        response = self._client._get(f"/batches/{self.batch_id}/log?from=-{size}&size={size}")
         return response.get("log", [])
+
+    def get_info(self) -> Dict[str, Any]:
+        """Return the full batch record (state, appId, appInfo with YARN UI links)."""
+        return self._client._get(f"/batches/{self.batch_id}")
 
     def wait(self, poll_interval: int = 5, timeout: int = 3600) -> str:
         """
@@ -67,7 +71,7 @@ class LivyBatchJob:
         Returns:
             Final state string: 'success' or 'dead'.
         """
-        terminal_states = {"success", "dead", "killed"}
+        terminal_states = {"success", "dead", "killed", "error"}
         elapsed = 0
 
         while elapsed < timeout:
@@ -251,13 +255,16 @@ class LivyClient:
         executor_cores: Optional[int] = None,
         executor_memory: Optional[str] = None,
         driver_memory: Optional[str] = None,
+        queue: Optional[str] = None,
+        py_files: Optional[List[str]] = None,
     ) -> LivyBatchJob:
         """
         Submit a PySpark script as a batch job via POST /batches.
 
         Args:
-            file:             Path to the Python script accessible by the Livy
-                              server, e.g. 'local:///opt/spark-jobs/pi.py'.
+            file:             URI of the Python script, readable by the cluster,
+                              e.g. 'abfss://spark@acct.dfs.core.windows.net/spark-bridge/jobs/pi.py'
+                              or 'local:///opt/spark-jobs/pi.py'.
             args:             Command-line arguments forwarded to the script.
             conf:             Spark configuration overrides.
             name:             Application name shown in the Spark UI.
@@ -265,6 +272,8 @@ class LivyClient:
             executor_cores:   vCPU cores per executor.
             executor_memory:  Executor JVM heap, e.g. '2g'.
             driver_memory:    Driver JVM heap, e.g. '1g'.
+            queue:            YARN queue, e.g. 'etl' or 'adhoc' (YARN mode only).
+            py_files:         Extra .py / .zip dependencies (URIs).
 
         Returns:
             LivyBatchJob instance for polling and log retrieval.
@@ -285,6 +294,10 @@ class LivyClient:
             payload["executorMemory"] = executor_memory
         if driver_memory:
             payload["driverMemory"] = driver_memory
+        if queue:
+            payload["queue"] = queue
+        if py_files:
+            payload["pyFiles"] = py_files
 
         response = self._post("/batches", payload)
         batch_id = response["id"]
@@ -296,6 +309,7 @@ class LivyClient:
         kind: str = "pyspark",
         name: Optional[str] = None,
         conf: Optional[Dict[str, str]] = None,
+        queue: Optional[str] = None,
     ) -> LivySession:
         """
         Create an interactive Livy session via POST /sessions.
@@ -304,6 +318,7 @@ class LivyClient:
             kind:  Interpreter kind: 'pyspark', 'spark' (Scala), or 'sparkr'.
             name:  Optional session label shown in the Livy UI.
             conf:  Spark configuration overrides applied to this session.
+            queue: YARN queue for the session (YARN mode only).
 
         Returns:
             LivySession instance (supports context-manager usage).
@@ -314,6 +329,8 @@ class LivyClient:
             payload["name"] = name
         if conf:
             payload["conf"] = conf
+        if queue:
+            payload["queue"] = queue
 
         response = self._post("/sessions", payload)
         session_id = response["id"]

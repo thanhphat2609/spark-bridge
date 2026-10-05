@@ -18,6 +18,7 @@ Run:
 """
 
 import logging
+import os
 import sys
 
 from livy_client import LivyClient
@@ -28,7 +29,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-LIVY_HOST = "http://40.139.179.159:8998"
+LIVY_HOST = os.environ.get("LIVY_URL", "http://localhost:8998")
 
 
 def print_output(label: str, output: dict) -> None:
