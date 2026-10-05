@@ -202,13 +202,22 @@ class LivyClient:
     Args:
         host:    Full base URL of the Livy server, e.g. 'http://10.0.0.5:8998'.
         timeout: HTTP request timeout in seconds.
+        headers: Extra HTTP headers, e.g. {"X-Github-Token": "..."} to reach a
+                 private GitHub Codespaces forwarded port.
     """
 
-    def __init__(self, host: str, timeout: int = 30) -> None:
+    def __init__(
+        self,
+        host: str,
+        timeout: int = 30,
+        headers: Optional[Dict[str, str]] = None,
+    ) -> None:
         self.host = host.rstrip("/")
         self.timeout = timeout
         self._session = requests.Session()
         self._session.headers.update({"Content-Type": "application/json"})
+        if headers:
+            self._session.headers.update(headers)
 
     # ------------------------------------------------------------------
     # Low-level HTTP helpers
@@ -243,6 +252,16 @@ class LivyClient:
             self._get("/sessions")
             return True
         except (requests.ConnectionError, requests.HTTPError, requests.Timeout):
+            return False
+        except ValueError:
+            # Got a non-JSON page, typically the GitHub sign-in page of a private
+            # Codespaces port or a proxy error page -- not Livy.
+            logger.error(
+                "%s answered with a non-JSON page (not Livy). For a private "
+                "Codespaces port, set LIVY_GITHUB_TOKEN or use http://localhost:8998 "
+                "inside the codespace.",
+                self.host,
+            )
             return False
 
     def submit_batch(

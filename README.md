@@ -254,6 +254,29 @@ You can also submit from the Codespace terminal itself (after the client contain
 LIVY_URL=http://localhost:8998 STORAGE_ROOT=file:///data/shared python src/client/run_demo.py
 ```
 
+#### Calling Livy through the forwarded URL (`https://<codespace>-8998.app.github.dev`)
+
+Codespaces forwarded ports are **private** by default: a request without your GitHub login is redirected to a GitHub sign-in page. The client then fails with `JSONDecodeError: Expecting value`, because it received HTML instead of Livy's JSON.
+
+| Where the client runs | `LIVY_URL` | Extra |
+|---|---|---|
+| Codespace terminal | `http://localhost:8998` | none (simplest) |
+| Your laptop / another machine | `https://<codespace>-8998.app.github.dev` | `LIVY_GITHUB_TOKEN` = the codespace's `$GITHUB_TOKEN`, sent as the `X-Github-Token` header; the port stays private |
+| Anyone on the internet | same URL, port set to **Public** | ⚠️ Don't: Livy has no authentication, so a public port lets anyone run code in your codespace |
+
+```bash
+# 1) in the codespace terminal: print its token and copy it
+echo $GITHUB_TOKEN
+
+# 2) on your laptop
+export LIVY_URL=https://<codespace>-8998.app.github.dev
+export LIVY_GITHUB_TOKEN=<token from step 1>      # treat it like a password; it expires with the codespace
+export STORAGE_ROOT=file:///data/shared        # paths are resolved inside the cluster, not on your laptop
+python src/client/run_demo.py
+```
+
+Set the URL with the environment variable rather than editing the default in code: each codespace gets a different URL, and the code stays the same for Azure.
+
 ### A4. Clean up
 
 ```bash

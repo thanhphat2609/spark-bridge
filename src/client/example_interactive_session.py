@@ -30,6 +30,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 LIVY_HOST = os.environ.get("LIVY_URL", "http://localhost:8998")
+GITHUB_TOKEN = os.environ.get("LIVY_GITHUB_TOKEN")  # private Codespaces URL only
 
 
 def print_output(label: str, output: dict) -> None:
@@ -139,7 +140,8 @@ for word, count in freq:
 
 
 def main() -> None:
-    client = LivyClient(LIVY_HOST)
+    headers = {"X-Github-Token": GITHUB_TOKEN} if GITHUB_TOKEN else None
+    client = LivyClient(LIVY_HOST, headers=headers)
 
     if not client.health_check():
         logger.error(

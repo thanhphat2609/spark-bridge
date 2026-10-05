@@ -11,9 +11,12 @@ It submits two batch jobs through Livy and fails loudly if either fails:
 Configuration (environment variables):
     LIVY_URL      http://sb-master:8998           (Azure, private network)
                   http://localhost:8998           (Codespaces terminal)
+                  https://<codespace>-8998.app.github.dev  (from outside, see below)
     STORAGE_ROOT  abfss://spark@<acct>.dfs.core.windows.net/spark-bridge
                   file:///data/shared             (Codespaces)
     YARN_QUEUE    etl (default)
+    LIVY_GITHUB_TOKEN  only for a PRIVATE Codespaces forwarded URL (*.app.github.dev):
+                  the codespace's $GITHUB_TOKEN, sent as the X-Github-Token header
 
 Jobs and data must already be uploaded under STORAGE_ROOT:
     Azure      : bash scripts/deploy_jobs_azure.sh
@@ -38,6 +41,7 @@ logger = logging.getLogger(__name__)
 LIVY_URL = os.environ.get("LIVY_URL", "http://localhost:8998")
 STORAGE_ROOT = os.environ.get("STORAGE_ROOT", "file:///data/shared").rstrip("/")
 YARN_QUEUE = os.environ.get("YARN_QUEUE", "etl")
+GITHUB_TOKEN = os.environ.get("LIVY_GITHUB_TOKEN")
 
 JOBS = f"{STORAGE_ROOT}/jobs"
 DATA = f"{STORAGE_ROOT}/data"
@@ -62,7 +66,8 @@ def run_and_report(name: str, job: LivyBatchJob) -> bool:
 
 
 def main() -> None:
-    client = LivyClient(LIVY_URL)
+    headers = {"X-Github-Token": GITHUB_TOKEN} if GITHUB_TOKEN else None
+    client = LivyClient(LIVY_URL, headers=headers)
     if not client.health_check():
         logger.error("Cannot reach Livy at %s", LIVY_URL)
         sys.exit(1)
