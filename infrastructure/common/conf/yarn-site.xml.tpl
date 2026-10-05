@@ -24,10 +24,8 @@
   <property><name>yarn.nodemanager.env-whitelist</name>
             <value>JAVA_HOME,HADOOP_COMMON_HOME,HADOOP_HDFS_HOME,HADOOP_CONF_DIR,CLASSPATH_PREPEND_DISTCACHE,HADOOP_YARN_HOME,HADOOP_HOME,PATH,LANG,TZ,SPARK_HOME,PYSPARK_PYTHON</value></property>
 
-  <!-- Spark external shuffle service (enables dynamic allocation) -->
-  <property><name>yarn.nodemanager.aux-services</name><value>spark_shuffle</value></property>
-  <property><name>yarn.nodemanager.aux-services.spark_shuffle.class</name>
-            <value>org.apache.spark.network.yarn.YarnShuffleService</value></property>
+  <!-- No external Spark shuffle service: dynamic allocation uses shuffle tracking
+       (spark-defaults.conf), so the NodeManager needs no extra jar or aux-service. -->
 
   <!-- Container logs -> object storage after the app finishes -->
   <property><name>yarn.log-aggregation-enable</name><value>true</value></property>

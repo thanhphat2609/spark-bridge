@@ -1,7 +1,7 @@
 # =============================================================================
 # SparkBridge on YARN - AZURE  ·  VM "sb-worker-1"  (compute)
 #
-# Runs: YARN NodeManager + Spark shuffle service.
+# Runs: YARN NodeManager.
 # Spark drivers (cluster deploy mode) AND executors run in YARN containers here.
 #
 # Add more workers = create another VM from the same recipe and run this file.

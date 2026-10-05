@@ -50,7 +50,7 @@ graph LR
     end
 
     subgraph WORKER [VM sb-worker-1 - Compute]
-        NM[YARN NodeManager<br/>+ Spark shuffle service]
+        NM[YARN NodeManager]
         D[Spark driver + executors<br/>in YARN containers]
     end
 
@@ -72,7 +72,7 @@ The client only ever talks to **port 8998** (Livy) and never needs to know Spark
 |---|---|
 | PySpark can't run in `cluster` deploy mode, so every driver runs on the master/Livy VM, which becomes the memory bottleneck. | Drivers run in YARN containers on the **worker**. The master only hosts small control-plane daemons. |
 | No queues: every job competes first-come, first-served. | **Capacity Scheduler queues**: `default`, `etl`, `adhoc`. |
-| Limited dynamic allocation. | YARN **Spark shuffle service**, so dynamic allocation is safe (executors scale 0 → N). |
+| Limited dynamic allocation. | **Dynamic allocation with shuffle tracking**: executors scale 0 → N per job, no extra shuffle daemon. |
 | Logs disappear with containers. | **Log aggregation** to object storage, plus the Spark History Server. |
 | Config differs from Dataproc. | Same model as Dataproc (`spark.master=yarn`), so jobs and configs are portable. |
 
@@ -117,10 +117,11 @@ GitHub Codespace (one Docker host)
 | Layer | Technology |
 |---|---|
 | Processing engine | Apache Spark 3.5.1 (`bin-hadoop3`) |
-| Resource manager | Apache Hadoop YARN 3.3.4 (RM + NM only, no HDFS). Same version as Spark's bundled Hadoop client |
+| Resource manager | Apache Hadoop YARN 3.3.6 (RM + NM only, no HDFS). Spark keeps its bundled 3.3.4 client; the two are wire-compatible |
 | REST gateway | Apache Livy 0.8.0 (Scala 2.12 / Spark 3 build) |
 | Storage connector | `hadoop-azure` (ABFS) on both the Hadoop and Spark classpaths |
 | Container base | `eclipse-temurin:11-jre-jammy` (OpenJDK 11 on Ubuntu 22.04) |
+| Build sources | Spark and Hadoop copied from the official `apache/spark:3.5.1` / `apache/hadoop:3.3.6` images (Docker Hub CDN), Livy from `dlcdn.apache.org`, Azure jars from Maven Central |
 | Runtime | Docker + Docker Compose |
 | Client | Python 3 + `requests` |
 | Jobs | PySpark |
@@ -274,7 +275,7 @@ Then **stop the Codespace** (GitHub → Codespaces → ⋯ → Stop). It bills b
  ┌──────────────────┐    :8998     ┌────────────────────────────┐        ┌──────────────────────┐
  │ sb-client        │ ───────────► │ sb-master                  │ ◄────► │ sb-worker-1          │
  │ B1s              │   (private)  │ B2ms                       │  YARN  │ B2ms                 │
- │ python + az CLI  │              │ RM · Livy · History Server │        │ NodeManager+shuffle  │
+ │ python + az CLI  │              │ RM · Livy · History Server │        │ YARN NodeManager     │
  └────────┬─────────┘              └─────────────┬──────────────┘        └──────────┬───────────┘
           │ upload jobs/data                     │ staging, event logs              │ read/write data, logs
           └──────────────────────────► Storage account (ADLS Gen2) · container "spark" ◄┘
@@ -295,7 +296,7 @@ MY_IP=$(curl -s https://ifconfig.me)     # your public IP, the only one allowed 
 az group create -n $RG -l $LOC
 
 # Network + one NSG for all VMs: SSH only from your IP.
-# VM-to-VM traffic (YARN, Livy, shuffle) is allowed by the default "AllowVnetInBound" rule.
+# VM-to-VM traffic (YARN, Livy, Spark) is allowed by the default "AllowVnetInBound" rule.
 az network vnet create -g $RG -n vnet-sb --address-prefix 10.10.0.0/16 \
   --subnet-name snet-sb --subnet-prefix 10.10.1.0/24
 az network nsg create -g $RG -n nsg-sb
@@ -480,7 +481,7 @@ Then in `.env` set `AZURE_AUTH_MODE=msi`, remove `AZURE_STORAGE_KEY`, and restar
 
 1. **Client** → `POST /batches` on Livy with `file=<STORAGE_ROOT>/jobs/sales_etl.py`, `args=[input, output]`, `queue=etl`.
 2. **Livy** runs `spark-submit --master yarn --deploy-mode cluster`. Spark's jars are **not** uploaded: they're already in the image on every node (`spark.yarn.jars=local:/opt/spark/jars/*`, PySpark via `PYSPARK_ARCHIVES_PATH=local:...`). Only a small `__spark_conf__.zip` goes to `<STORAGE_ROOT>/staging`.
-3. **YARN ResourceManager** starts the ApplicationMaster + **driver** in a container on the **worker**. Executors scale from 0 to `SPARK_MAX_EXECUTORS` with dynamic allocation; the Spark shuffle service runs inside the NodeManager.
+3. **YARN ResourceManager** starts the ApplicationMaster + **driver** in a container on the **worker**. Executors scale from 0 to `SPARK_MAX_EXECUTORS` with dynamic allocation (shuffle tracking keeps executors that still hold shuffle data).
 4. The job reads `data/raw/sales.csv` and writes `data/curated/...` directly in storage.
 5. On finish, the event log goes to `<STORAGE_ROOT>/spark-history` (History Server) and container logs go to `<STORAGE_ROOT>/yarn-logs`. Livy reports `success`, and the client prints PASS.
 
@@ -570,7 +571,7 @@ print(job.get_info()["appId"])
 | 18080 | Spark History Server | master | Operators via SSH tunnel |
 | 10000–10010 | Livy RSC callback | master | Interactive-session drivers on workers (internal) |
 | 8041 / 8042 | NodeManager RPC / UI | worker | RM (internal) / operators |
-| 7337 | Spark shuffle service | worker | Executors (internal) |
+| dynamic | Spark driver / executors | worker | Each other, Livy (internal) |
 | 22 | SSH | all | Your IP only |
 
 ---
@@ -609,7 +610,7 @@ A 3-hour demo costs well under **1 USD** in compute. Keep it cheap:
 | `UnknownHostException: sb-worker-1` | Hostnames not resolvable. All VMs must be in the same VNet (Azure DNS), and `MASTER_HOST` must be correct. |
 | Livy: `Local path ... cannot be added to user sessions` | Codespaces only: the `file://` path must be under `/data/shared/`. |
 | Interactive session hangs in `starting` | The driver on the worker can't reach Livy on `MASTER_HOST:10000-10010`. |
-| Build fails or is very slow downloading Spark / Hadoop / Livy | `archive.apache.org` throttles big files. The build already resumes, retries, and falls back to the Huawei Cloud mirror, and every file is SHA-512 verified. Re-run the build (finished layers are cached), or put a faster mirror first: `docker compose ... build --build-arg APACHE_MIRRORS="https://<mirror>/apache https://archive.apache.org/dist"`. |
+| Build fails while downloading | The image pulls Spark and Hadoop from the official `apache/spark` / `apache/hadoop` Docker Hub images, Livy from `dlcdn.apache.org` and jars from Maven Central (no `archive.apache.org`). Re-run the build: finished layers are cached. Docker Hub rate limit (`toomanyrequests`): run `docker login`. |
 | Where is my `print()` output? | In the driver container log: RM UI → app → **Logs**, or `docker exec sb-resourcemanager yarn logs -applicationId <id>`. |
 
 ---

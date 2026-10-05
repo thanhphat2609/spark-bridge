@@ -7,7 +7,7 @@
 #   resourcemanager   YARN ResourceManager           (master VM)
 #   history           Spark History Server           (master VM)
 #   livy              Apache Livy REST gateway        (master VM)
-#   nodemanager       YARN NodeManager + shuffle svc  (worker VM)
+#   nodemanager       YARN NodeManager                (worker VM)
 #   smoke-storage     Read/write test against ${STORAGE_ROOT}, then exit
 #   <anything else>   exec'd as-is (e.g. "bash")
 #
@@ -150,7 +150,9 @@ print("SMOKE rows read back:", spark.read.parquet(path).count())
 spark.stop()
 EOF
     spark-submit --master "local[1]" --deploy-mode client \
-      --conf spark.eventLog.enabled=false \n      --conf spark.shuffle.service.enabled=false \n      --conf spark.dynamicAllocation.enabled=false \n      /tmp/smoke.py
+      --conf spark.eventLog.enabled=false \
+      --conf spark.dynamicAllocation.enabled=false \
+      /tmp/smoke.py
     echo "Storage smoke test PASSED"
     ;;
 
