@@ -31,7 +31,7 @@ def build_uri(storage: str, path: str) -> str:
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Run a PySpark file on the cluster through Livy.")
-    p.add_argument("livy_url", help="e.g. http://sb-master:8998")
+    p.add_argument("livy_url", help="e.g. http://<master-ip>:8998")
     p.add_argument("storage", help="ADLS account name (e.g. dataplatform), or 'local' for the Codespaces volume")
     p.add_argument("path", help="<container>/<path/to/job.py>")
     p.add_argument("--name", help="Spark app name (default: job file name)")

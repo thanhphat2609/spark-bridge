@@ -1,5 +1,5 @@
 # =============================================================================
-# SparkBridge on YARN - AZURE  ·  VM "sb-worker-1"  (compute)
+# SparkBridge on YARN - AZURE  ·  VM "spark-bridge-worker"  (compute)
 #
 # Runs: YARN NodeManager.
 # Spark drivers (cluster deploy mode) AND executors run in YARN containers here.
@@ -7,7 +7,7 @@
 # Add more workers = create another VM from the same recipe and run this file.
 #
 #   cd infrastructure/azure
-#   cp .env.example .env   # SAME .env as the master (MASTER_HOST must point to sb-master)
+#   cp .env.example .env   # SAME .env as the master (MASTER_HOST must point to spark-bridge-master)
 #   docker compose -f compose.worker.yml up -d --build
 # =============================================================================
 

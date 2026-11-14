@@ -1,5 +1,5 @@
 <svg viewBox="0 0 1200 760" xmlns="http://www.w3.org/2000/svg" role="img"
-     aria-label="SparkBridge architecture: a client submits jobs over HTTP to Livy on sb-master, which calls YARN to schedule a Spark driver and executors as containers on sb-worker-1; all code, data and logs live in Azure Blob storage, which the master and worker nodes read and write directly.">
+     aria-label="SparkBridge architecture: a client submits jobs over HTTP to Livy on spark-bridge-master, which calls YARN to schedule a Spark driver and executors as containers on spark-bridge-worker; all code, data and logs live in Azure Blob storage, which the master and worker nodes read and write directly.">
   <defs>
     <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
       <path d="M0,0 L10,5 L0,10 z" fill="#1f2937"/>
@@ -23,24 +23,24 @@
 
   <!-- ===================== subgraph frames ===================== -->
   <rect class="frame" x="30"  y="50" width="260" height="330" rx="10"/>
-  <text class="title" x="50" y="78">sb-client</text>
-  <text class="sub"   x="50" y="94">"Airflow-lite" · B1s</text>
+  <text class="title" x="50" y="78">Your laptop / CI</text>
+  <text class="sub"   x="50" y="94">no VM needed · SSH tunnel to :8998</text>
 
   <rect class="frame" x="330" y="50" width="330" height="330" rx="10"/>
-  <text class="title" x="350" y="78">sb-master</text>
+  <text class="title" x="350" y="78">spark-bridge-master</text>
   <text class="sub"   x="350" y="94">control plane · B2ms</text>
 
   <rect class="frame" x="700" y="50" width="280" height="330" rx="10"/>
-  <text class="title" x="720" y="78">sb-worker-1</text>
+  <text class="title" x="720" y="78">spark-bridge-worker</text>
   <text class="sub"   x="720" y="94">compute · B2ms (add more to scale)</text>
 
   <!-- ===================== client nodes ===================== -->
   <rect class="node" x="60"  y="150" width="200" height="60" rx="6"/>
-  <text class="svc" x="160" y="175" text-anchor="middle">Python script</text>
-  <text class="sub" x="160" y="193" text-anchor="middle">requests only</text>
+  <text class="svc" x="160" y="175" text-anchor="middle">Runner CLI</text>
+  <text class="sub" x="160" y="193" text-anchor="middle">main.py · requests only</text>
 
   <rect class="node" x="60"  y="250" width="200" height="60" rx="6"/>
-  <text class="svc" x="160" y="275" text-anchor="middle">az CLI</text>
+  <text class="svc" x="160" y="275" text-anchor="middle">GitHub Actions / az CLI</text>
   <text class="sub" x="160" y="293" text-anchor="middle">upload jobs/ + data/</text>
 
   <!-- ===================== master nodes ===================== -->

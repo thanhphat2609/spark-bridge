@@ -8,8 +8,8 @@ The same project runs in two environments:
 
 | Environment | Purpose | Where | Storage |
 |---|---|---|---|
-| **QA: GitHub Codespaces** | "Does it build, launch and run a job?" | 1 host, containers mimic the 3 VMs | Shared Docker volume (`file:///data/shared`) |
-| **Demo: Azure VMs** | Real job submission against Azure Blob | 3 VMs: client, master, worker | Azure ADLS Gen2 (`abfss://`) |
+| **QA: GitHub Codespaces** | "Does it build, launch and run a job?" | 1 host, containers mimic the 2 VMs + your laptop | Shared Docker volume (`file:///data/shared`) |
+| **Demo: Azure VMs** | Real job submission against Azure Blob | 2 VMs: master, worker (you run the runner from your laptop) | Azure ADLS Gen2 (`abfss://`) |
 
 ---
 
@@ -38,7 +38,7 @@ The same project runs in two environments:
 
 ![SparkBridge architecture: client submits over HTTP to Livy, which asks YARN to run the Spark driver and executors on the worker; all code, data and logs live in Azure Blob storage](docs/architecture.svg)
 
-The client only ever talks to **port 8998** (Livy) and never needs to know Spark exists.
+The client (your laptop running `src/runner/main.py`, or CI) only ever talks to **port 8998** (Livy) and never needs to know Spark exists.
 
 ### Why YARN instead of Spark Standalone
 
@@ -66,20 +66,20 @@ ${STORAGE_ROOT}/                  e.g. abfss://spark@<account>.dfs.core.windows.
 
 | Dataproc | SparkBridge |
 |---|---|
-| Master node (YARN RM) | `sb-master`: RM + Livy + History Server |
-| Primary workers (NodeManager) | `sb-worker-1` (add more VMs to scale) |
+| Master node (YARN RM) | `spark-bridge-master`: RM + Livy + History Server |
+| Primary workers (NodeManager) | `spark-bridge-worker` (add more VMs to scale) |
 | Jobs API | Livy REST API |
 | `gs://` for jobs and data | `abfss://` for jobs, data, staging and logs |
 | Component Gateway | SSH tunnel to 8088 / 18080 |
 | Autoscaling, init actions | Not in scope (scale manually by adding worker VMs) |
 
-### How Codespaces mimics the 3 VMs
+### How Codespaces mimics the Azure VMs
 
 ```
 GitHub Codespace (one Docker host)
-├── "master" network namespace   resourcemanager + history + livy   (= sb-master)
-├── worker                       nodemanager                        (= sb-worker-1)
-├── client (on demand)           python + requests                  (= sb-client)
+├── "master" network namespace   resourcemanager + history + livy   (= spark-bridge-master)
+├── worker                       nodemanager                        (= spark-bridge-worker)
+├── client (on demand)           python + requests                  (= your laptop / runner)
 └── volume "shared"              mounted at /data/shared            (= Azure Blob)
 ```
 
@@ -105,6 +105,9 @@ GitHub Codespace (one Docker host)
 
 ```
 spark-bridge/
+├── .github/
+│   ├── workflows/deploy-azure.yml        # manual deploy to the Azure VMs (B9)
+│   └── actions-config.example            # which GitHub secrets/variables to set
 ├── .devcontainer/devcontainer.json       # Codespaces: 4 cores / 16 GB + Docker-in-Docker
 ├── data/sample/sales.csv                 # demo input data
 ├── scripts/
@@ -119,7 +122,7 @@ spark-bridge/
 │   │   └── sales_report.py
 │   ├── runner/                           # runs on ANY machine (requests only)
 │   │   ├── main.py                       # CLI: python main.py <livy_url> <storage> <container/file.py>
-│   │   └── livy_client.py                # reusable LivyClient (queue, pyFiles, logs)
+│   │   └── livy_client.py                # reusable LivyClient (batches, sessions, logs)
 │   └── requirements.txt
 └── infrastructure/
     ├── common/                           # shared by both images
@@ -130,8 +133,8 @@ spark-bridge/
     │   └── docker-compose.yml            # all roles on one host + client container
     └── azure/                            # demo
         ├── Dockerfile                    # + Azure ABFS connector
-        ├── compose.master.yml            # run on sb-master
-        ├── compose.worker.yml            # run on sb-worker-1
+        ├── compose.master.yml            # run on spark-bridge-master
+        ├── compose.worker.yml            # run on spark-bridge-worker
         └── .env.example                  # copy to .env and fill in
 ```
 
@@ -147,7 +150,7 @@ Both images share `infrastructure/common/` (the Docker build context is `infrast
 | 2 | Pick a globally unique **storage account name** (3–24 lowercase letters/digits) | `ACCT=` in step B1 | – | ✅ |
 | 3 | Fill in `.env` from `.env.example`: `MASTER_HOST`, `AZURE_STORAGE_ACCOUNT`, `STORAGE_ROOT`, `AZURE_STORAGE_KEY` | `infrastructure/azure/.env` | – | ✅ |
 | 4 | Match worker sizing to the worker VM: `NM_MEMORY_MB`, `NM_VCORES` | same `.env` | – | ✅ |
-| 5 | Your repo URL in `git clone` (private repo: use a GitHub PAT or `gh auth login`) | steps B3/B5 | – | ✅ |
+| 5 | Your repo URL in `git clone` (private repo: use a GitHub PAT or `gh auth login`); not needed if you deploy with the GitHub Actions workflow (B9) | step B3 / B4 | – | ✅ |
 | 6 | Azure region (`LOC=`) and auto-shutdown time | step B1 | – | ✅ |
 
 Nothing else needs editing: no hostnames or keys are hardcoded. `.env` is in `.gitignore`, so **never commit it**.
@@ -254,7 +257,7 @@ python src/runner/main.py <livy_url> <storage_account> <container/path/to/job.py
 
 | Positional | Meaning |
 |---|---|
-| `livy_url` | Livy endpoint, e.g. `http://sb-master:8998` |
+| `livy_url` | Livy endpoint. From your laptop use the SSH tunnel: `http://localhost:8998` (see B5). Inside the VNet: `http://spark-bridge-master:8998` |
 | `storage_account` | ADLS account name (e.g. `dataplatform`), or `local` for the Codespaces shared volume |
 | `container/path` | First segment is the container, the rest is the blob path. Becomes `abfss://<container>@<account>.dfs.core.windows.net/<path>` |
 
@@ -275,14 +278,14 @@ Examples:
 
 ```bash
 # Compute-only job
-python src/runner/main.py http://sb-master:8998 dataplatform jobs/pi_estimation.py
+python src/runner/main.py http://localhost:8998 dataplatform spark/spark-bridge/jobs/pi_estimation.py
 
 # ETL: CSV -> Parquet (input/output paths are defined inside sales_etl.py), explicit sizing
-python src/runner/main.py http://sb-master:8998 dataplatform jobs/sales_etl.py \
+python src/runner/main.py http://localhost:8998 dataplatform spark/spark-bridge/jobs/sales_etl.py \
   --executors 4 --cores 2 --executor-memory 2g --driver-memory 1g
 
 # Custom app name
-python src/runner/main.py http://sb-master:8998 dataplatform jobs/word_count.py --name WordCount
+python src/runner/main.py http://localhost:8998 dataplatform spark/spark-bridge/jobs/word_count.py --name WordCount
 
 # Codespaces (local shared volume)
 python src/runner/main.py http://localhost:8998 local jobs/pi_estimation.py
@@ -302,41 +305,39 @@ Then **stop the Codespace** (GitHub → Codespaces → ⋯ → Stop). It bills b
 
 ## 6. Part B: Run the Demo on Azure VMs
 
-**Goal:** 3 VMs in one VNet. The client submits through Livy, the job reads and writes **real Azure Blob storage**, and drivers and executors run on the worker only.
+**Goal:** 2 VMs in one VNet (master + worker). Your laptop submits to Livy (from your IP, or over an SSH tunnel), the job reads and writes **real Azure Blob storage**, and drivers and executors run on the worker only.
 
 ```
-                      VNet 10.10.0.0/16 · subnet 10.10.1.0/24 · NSG: SSH from YOUR IP only
- ┌──────────────────┐    :8998     ┌────────────────────────────┐        ┌──────────────────────┐
- │ sb-client        │ ───────────► │ sb-master                  │ ◄────► │ sb-worker-1          │
- │ B1s              │   (private)  │ B2ms                       │  YARN  │ B2ms                 │
- │ python + az CLI  │              │ RM · Livy · History Server │        │ YARN NodeManager     │
- └────────┬─────────┘              └─────────────┬──────────────┘        └──────────┬───────────┘
-          │ upload jobs/data                     │ staging, event logs              │ read/write data, logs
-          └──────────────────────────► Storage account (ADLS Gen2) · container "spark" ◄┘
+          VNet vnet-eastus-1 · subnet snet-eastus-1 · one NSG per VM
+ ┌────────────────┐   :8998 / :8088   ┌────────────────────────────┐   default VNet rule   ┌──────────────────────┐
+ │ your laptop    │ ────────────────► │ spark-bridge-master        │ ◄───────────────────► │ spark-bridge-worker  │
+ │ runner/main.py │  (your IP only)   │ B2ms · 172.16.0.4          │  YARN / Spark ports   │ B2ms                 │
+ │ or GitHub CI   │                   │ RM · Livy · History Server │                       │ YARN NodeManager     │
+ └───────┬────────┘                   └─────────────┬──────────────┘                       └──────────┬───────────┘
+         │ upload jobs/data (CI)                    │ staging, event logs                             │ read/write data, logs
+         └──────────────────────────────► Storage account (ADLS Gen2) · container "spark" ◄───────────┘
 ```
 
 Prerequisites on your laptop: [Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli), `az login`, and an SSH client.
 
 ### B1. Provision Azure resources (from your laptop, once)
 
+> Already created the VMs in the Azure Portal? Skip the CLI below and go to **Network rules**, then B2. Every VM name in this README is an example (`spark-bridge-master`, `spark-bridge-worker`): use your own, and set `MASTER_HOST` to the master's name or private IP.
+
 ```bash
 # ---- change these -------------------------------------------------------------
 RG=rg-sparkbridge
 LOC=southeastasia
 ACCT=sparkbridge$RANDOM                  # storage account: globally unique, lowercase
-MY_IP=$(curl -s https://ifconfig.me)     # your public IP, the only one allowed to SSH
+MY_IP=$(curl -s https://ifconfig.me)     # your public IP
 # --------------------------------------------------------------------------------
 
 az group create -n $RG -l $LOC
 
-# Network + one NSG for all VMs: SSH only from your IP.
-# VM-to-VM traffic (YARN, Livy, Spark) is allowed by the default "AllowVnetInBound" rule.
+# Network + one NSG for both VMs (rules: see "Network rules" below)
 az network vnet create -g $RG -n vnet-sb --address-prefix 10.10.0.0/16 \
   --subnet-name snet-sb --subnet-prefix 10.10.1.0/24
 az network nsg create -g $RG -n nsg-sb
-az network nsg rule create -g $RG --nsg-name nsg-sb -n allow-ssh-from-me --priority 1000 \
-  --access Allow --protocol Tcp --direction Inbound \
-  --source-address-prefixes $MY_IP --destination-port-ranges 22
 
 # Storage: ADLS Gen2 (hierarchical namespace ON) -- required for abfss://
 az storage account create -g $RG -n $ACCT -l $LOC \
@@ -345,16 +346,15 @@ KEY=$(az storage account keys list -g $RG -n $ACCT --query [0].value -o tsv)
 az storage container create --account-name $ACCT --account-key $KEY -n spark
 echo "ACCT=$ACCT"; echo "KEY=$KEY"                  # copy both, you need them in B3-B5
 
-# 3 Ubuntu 22.04 VMs. Public IPs are only for SSH + outbound downloads;
-# the NSG blocks everything from the internet except SSH from MY_IP.
+# 2 Ubuntu 22.04 VMs. Public IPs are only for SSH + outbound downloads;
+# the NSG blocks everything from the internet except what you allow below.
 COMMON="-g $RG --image Ubuntu2204 --vnet-name vnet-sb --subnet snet-sb --nsg nsg-sb \
         --admin-username azureuser --generate-ssh-keys"
-az vm create $COMMON -n sb-client   --size Standard_B1s
-az vm create $COMMON -n sb-master   --size Standard_B2ms
-az vm create $COMMON -n sb-worker-1 --size Standard_B2ms
+az vm create $COMMON -n spark-bridge-master   --size Standard_B2ms
+az vm create $COMMON -n spark-bridge-worker --size Standard_B2ms
 
 # Cost guard: shut all VMs down every day at 15:00 UTC (22:00 Vietnam time)
-for vm in sb-client sb-master sb-worker-1; do
+for vm in spark-bridge-master spark-bridge-worker; do
   az vm auto-shutdown -g $RG -n $vm --time 1500
 done
 
@@ -362,9 +362,38 @@ done
 az vm list-ip-addresses -g $RG -o table
 ```
 
-> **Security:** never open 8998, 8088 or 18080 to the internet. Livy has no authentication, and anyone who can reach it can run code on your cluster. Use the SSH tunnel in step B6 to view the UIs.
+#### Network rules (NSG)
 
-### B2. Install Docker on sb-master and sb-worker-1
+Each VM has its own NSG (Portal -> VM -> Networking -> Network settings). Both VMs must be in the **same VNet** (`vnet-eastus-1`): then Azure's default `AllowVnetInBound` rule (priority 65000) already lets master and worker reach each other on every port (YARN, Livy callback, Spark's random ports), so no custom rule is needed for that. Use your own public IP where `<my-ip>` appears (check it at ifconfig.me).
+
+**Master NSG, inbound**
+
+| Priority | Name | Port | Protocol | Source | Destination | Action | Purpose |
+|---|---|---|---|---|---|---|---|
+| 300 | `SSH` | 22 | TCP | Any | Any | Allow | SSH, GitHub Actions deploy (B9), tunnels. Key-only login; restrict to `<my-ip>` after the demo if you don't deploy from Actions |
+| 310 | `allow-livy-from-me` | 8998 | Any | `<my-ip>` | Any | Allow | Runner reaches Livy directly. Livy has no authentication: one IP only, remove after the demo |
+| 320 | `allow-yarn-ui-from-me` | 8088 | TCP | `<my-ip>` | Any | Allow | YARN ResourceManager UI |
+| 330 | `allow-history-from-me` | 18080 | TCP | `<my-ip>` | Any | Allow | Spark History Server (job output and logs) |
+| 65000 | `AllowVnetInBound` | Any | Any | VirtualNetwork | VirtualNetwork | Allow | Azure default: worker -> master |
+| 65500 | `DenyAllInBound` | Any | Any | Any | Any | Deny | Azure default |
+
+**Worker NSG, inbound**
+
+| Priority | Name | Port | Protocol | Source | Destination | Action | Purpose |
+|---|---|---|---|---|---|---|---|
+| 300 | `SSH` | 22 | TCP | Any | Any | Allow | GitHub Actions deploy (B9) and your SSH |
+| 65000 | `AllowVnetInBound` | Any | Any | VirtualNetwork | VirtualNetwork | Allow | Azure default: master -> NodeManager (8041, 8042) |
+| 65500 | `DenyAllInBound` | Any | Any | Any | Any | Deny | Azure default |
+
+Don't open 8042 or any other worker port to the internet.
+
+**Outbound (both NSGs):** keep Azure's defaults (`AllowVnetOutBound`, `AllowInternetOutBound`). They cover Azure Storage (443), Docker Hub, Maven Central and the Apache downloads. Only if outbound is restricted, allow: the VNet, port 443 to service tag `Storage`, ports 80/443 to `Internet`, and port 53.
+
+Name resolution (`spark-bridge-master`, `spark-bridge-worker`) is Azure DNS inside the VNet, so no `/etc/hosts` edits are needed. After B4, check: from the worker `getent hosts spark-bridge-master` and `curl -s http://spark-bridge-master:8088/ws/v1/cluster/info`; from the master `curl -s http://spark-bridge-worker:8042/ws/v1/node/info`. If a name doesn't resolve, set `MASTER_HOST` to the master's private IP (`172.16.0.4` here).
+
+> **Security:** never open 8998, 8088 or 18080 to the whole internet; always restrict the source to your own IP. Livy has no authentication, and anyone who can reach it can run code on your cluster. If you don't open the UI ports, use the SSH tunnel in step B6.
+
+### B2. Install Docker on spark-bridge-master and spark-bridge-worker
 
 SSH to **each** of the two VMs (`ssh azureuser@<public-ip>`) and run:
 
@@ -376,7 +405,9 @@ exit            # log out and SSH back in so the docker group applies
 
 Check after reconnecting: `docker compose version`.
 
-### B3. Start the master (sb-master)
+### B3. Start the master (spark-bridge-master)
+
+> Prefer automation? Skip B3 and B4 and use the GitHub Actions deploy in [B9](#b9-optional-deploy-with-github-actions-no-hand-written-env); it does the same thing on both VMs.
 
 ```bash
 git clone https://github.com/<your-user>/spark-bridge.git
@@ -388,7 +419,7 @@ nano .env
 Fill in `.env`:
 
 ```bash
-MASTER_HOST=sb-master                    # VM name; Azure DNS resolves it inside the VNet
+MASTER_HOST=spark-bridge-master                    # VM name; Azure DNS resolves it inside the VNet
 STORAGE_BACKEND=azure
 AZURE_STORAGE_ACCOUNT=<ACCT from B1>
 STORAGE_ROOT=abfss://spark@<ACCT>.dfs.core.windows.net/spark-bridge
@@ -409,13 +440,13 @@ docker compose -f compose.master.yml ps                                 # 3 serv
 
 `smoke-storage` must end with `Storage smoke test PASSED`. It writes to `abfss://` with both the Hadoop client (what YARN uses) and the Spark client (what jobs use), so any connector or credential problem shows up here, not in the middle of a demo.
 
-### B4. Start the worker (sb-worker-1)
+### B4. Start the worker (spark-bridge-worker)
 
 ```bash
 git clone https://github.com/<your-user>/spark-bridge.git
 cd spark-bridge/infrastructure/azure
 cp .env.example .env
-nano .env               # paste EXACTLY the same values as on sb-master
+nano .env               # paste EXACTLY the same values as on spark-bridge-master
 
 docker compose -f compose.worker.yml build
 docker compose -f compose.worker.yml run --rm nodemanager smoke-storage
@@ -425,60 +456,58 @@ docker compose -f compose.worker.yml up -d
 Verify the worker registered with YARN (on either VM):
 
 ```bash
-curl -s http://sb-master:8088/ws/v1/cluster/metrics | grep -o '"activeNodes":[0-9]*'
+curl -s http://spark-bridge-master:8088/ws/v1/cluster/metrics | grep -o '"activeNodes":[0-9]*'
 # -> "activeNodes":1
 ```
 
 The worker keeps shuffle and spill files on the VM's free temporary SSD (`/mnt/yarn`).
 
-### B5. Upload jobs and submit from the client (sb-client, "Airflow-lite")
+### B5. Upload jobs and submit from your laptop
 
 ```bash
-sudo apt-get update && sudo apt-get install -y python3-pip git
-curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
-
-git clone https://github.com/<your-user>/spark-bridge.git
-cd spark-bridge
 pip install -r src/requirements.txt          # only "requests" -- no Spark, no Java
 
-# 1) Upload jobs + demo data to Blob (what CI will do later on merge to main)
+# 1) Upload jobs + demo data to Blob (the GitHub Actions workflow in B9 does this too)
 export AZURE_STORAGE_ACCOUNT=<ACCT>
 export AZURE_STORAGE_KEY=<key>
 export AZURE_STORAGE_CONTAINER=spark
 export STORAGE_PREFIX=spark-bridge
-bash scripts/deploy_jobs_azure.sh
+bash scripts/deploy_jobs_azure.sh            # needs Azure CLI
 
-# 2) Submit through Livy (private network)
-python3 src/runner/main.py http://sb-master:8998 $AZURE_STORAGE_ACCOUNT spark/spark-bridge/jobs/pi_estimation.py
+# 2) Either use http://<master-public-ip>:8998 directly (needs the allow-livy-from-me rule),
+#    or open a tunnel and use http://localhost:8998 (keep this terminal open)
+ssh -N -L 8998:localhost:8998 azureuser@<spark-bridge-master-public-ip>
+
+# 3) In another terminal: submit
+python src/runner/main.py http://localhost:8998 $AZURE_STORAGE_ACCOUNT spark/spark-bridge/jobs/pi_estimation.py
 ```
 
-See [Running jobs with the runner](#running-jobs-with-the-runner) for all options.
+See [Running jobs with the runner](#running-jobs-with-the-runner) for all options. Instead of the tunnel you can add the optional `allow-livy-from-me` inbound rule and use `http://<spark-bridge-master-public-ip>:8998` directly.
 
 ### B6. Verify and show the demo
 
-Open the UIs on your laptop through an SSH tunnel to the master:
+Open `http://<master-public-ip>:8088` (YARN) and `:18080` (History) if you added those rules, or use an SSH tunnel to the master:
 
 ```bash
-ssh -L 8998:localhost:8998 -L 8088:localhost:8088 -L 18080:localhost:18080 azureuser@<sb-master-public-ip>
+ssh -L 8998:localhost:8998 -L 8088:localhost:8088 -L 18080:localhost:18080 azureuser@<spark-bridge-master-public-ip>
 ```
 
 | Check | Where |
 |---|---|
 | App `SUCCEEDED` | http://localhost:8088 |
-| Driver ran on **sb-worker-1**, not the master | RM UI → app → attempt → container host |
+| Driver ran on **spark-bridge-worker**, not the master | RM UI → app → attempt → container host |
 | Job stdout (`df.show()` of the sales report) | RM UI → app → **Logs**, or History |
 | Event logs / history | http://localhost:18080 |
 | Output Parquet in Blob | Azure Portal → storage account → Storage browser → `spark/spark-bridge/data/curated/sales_by_category/` |
 | Aggregated logs and event logs in Blob | `spark/spark-bridge/yarn-logs/` and `spark/spark-bridge/spark-history/` |
-| Master memory stays flat while jobs run | `docker stats` on sb-master |
+| Master memory stays flat while jobs run | `docker stats` on spark-bridge-master |
 
 ### B7. Stop / clean up
 
 ```bash
 # Pause (keeps everything, stops compute billing):
-az vm deallocate -g $RG -n sb-worker-1 --no-wait
-az vm deallocate -g $RG -n sb-master   --no-wait
-az vm deallocate -g $RG -n sb-client   --no-wait
+az vm deallocate -g $RG -n spark-bridge-worker --no-wait
+az vm deallocate -g $RG -n spark-bridge-master   --no-wait
 # Resume: az vm start ... then `docker compose ... up -d` starts automatically (restart: unless-stopped)
 
 # Delete everything when the demo is over:
@@ -490,7 +519,7 @@ az group delete -n $RG --yes --no-wait
 ### B8. Optional: use the VMs' managed identity instead of a storage key
 
 ```bash
-for vm in sb-master sb-worker-1; do
+for vm in spark-bridge-master spark-bridge-worker; do
   PID=$(az vm identity assign -g $RG -n $vm --query systemAssignedIdentity -o tsv)
   az role assignment create --assignee $PID --role "Storage Blob Data Contributor" \
     --scope $(az storage account show -g $RG -n $ACCT --query id -o tsv)
@@ -517,7 +546,7 @@ Then in `.env` set `AZURE_AUTH_MODE=msi`, remove `AZURE_STORAGE_KEY`, and restar
 | `AZURE_STORAGE_ACCOUNT` | `dataplatform` |
 | `AZURE_STORAGE_CONTAINER` | `spark` |
 | `STORAGE_PREFIX` | `spark-bridge` |
-| `MASTER_HOST` | `sb-master` (private name used inside the VNet) |
+| `MASTER_HOST` | `spark-bridge-master` (private name used inside the VNet) |
 | `MASTER_SSH_HOST` / `WORKER_SSH_HOST` | Public IP or DNS the runner can SSH to |
 | `VM_USER` | `azureuser` |
 | `NM_MEMORY_MB` / `NM_VCORES` | `6144` / `2` (optional) |
@@ -543,7 +572,7 @@ All settings are environment variables (`infrastructure/azure/.env` on Azure, th
 
 | Variable | Codespaces | Azure example | Meaning |
 |---|---|---|---|
-| `MASTER_HOST` | `master` | `sb-master` | Host of the RM / Livy / History Server |
+| `MASTER_HOST` | `master` | `spark-bridge-master` | Host of the RM / Livy / History Server |
 | `STORAGE_BACKEND` | `local` | `azure` | Which storage credentials to configure |
 | `STORAGE_ROOT` | `file:///data/shared` | `abfss://spark@<acct>.dfs.core.windows.net/spark-bridge` | Root for jobs, data, staging, logs |
 | `AZURE_STORAGE_ACCOUNT` | – | `<acct>` | Storage account name |
@@ -562,13 +591,13 @@ YARN queues (`common/conf/capacity-scheduler.xml.tpl`): a single `default` queue
 
 ## 9. Livy REST API Reference
 
-Inside the VNet (or through the SSH tunnel, replacing `sb-master` with `localhost`):
+Inside the VNet (or through the SSH tunnel, replacing `spark-bridge-master` with `localhost`):
 
 ### Submit a batch job (code in Blob)
 
 ```bash
 ROOT=abfss://spark@<acct>.dfs.core.windows.net/spark-bridge
-curl -X POST http://sb-master:8998/batches -H "Content-Type: application/json" -d '{
+curl -X POST http://spark-bridge-master:8998/batches -H "Content-Type: application/json" -d '{
   "file":  "'$ROOT'/jobs/sales_etl.py",
   "args":  ["'$ROOT'/data/raw/sales.csv", "'$ROOT'/data/curated/sales_by_category"],
   "name":  "SalesETL",
@@ -580,16 +609,16 @@ curl -X POST http://sb-master:8998/batches -H "Content-Type: application/json" -
 ### Poll job state / read logs
 
 ```bash
-curl http://sb-master:8998/batches/<batch_id>          # state, appId, YARN UI link
-curl http://sb-master:8998/batches/<batch_id>/log      # spark-submit / YARN client log
+curl http://spark-bridge-master:8998/batches/<batch_id>          # state, appId, YARN UI link
+curl http://spark-bridge-master:8998/batches/<batch_id>/log      # spark-submit / YARN client log
 ```
 
 ### Interactive session
 
 ```bash
-curl -X POST http://sb-master:8998/sessions -H "Content-Type: application/json" \
+curl -X POST http://spark-bridge-master:8998/sessions -H "Content-Type: application/json" \
   -d '{"kind": "pyspark"}'
-curl -X POST http://sb-master:8998/sessions/<session_id>/statements -H "Content-Type: application/json" \
+curl -X POST http://spark-bridge-master:8998/sessions/<session_id>/statements -H "Content-Type: application/json" \
   -d '{"code": "spark.version"}'
 ```
 
@@ -598,7 +627,7 @@ curl -X POST http://sb-master:8998/sessions/<session_id>/statements -H "Content-
 ```python
 from livy_client import LivyClient
 
-client = LivyClient("http://sb-master:8998")
+client = LivyClient("http://spark-bridge-master:8998")
 job = client.submit_batch(
     file=f"{ROOT}/jobs/pi_estimation.py",
     args=["1000000"],
@@ -613,14 +642,14 @@ print(job.get_info()["appId"])
 
 | Port | Service | VM | Who accesses it |
 |---|---|---|---|
-| 8998 | Livy REST API | master | Clients (**the only port clients need**), VNet only |
-| 8088 | YARN ResourceManager UI | master | Operators via SSH tunnel |
+| 8998 | Livy REST API | master | Clients (**the only port clients need**): your IP only (rule `allow-livy-from-me`), or via SSH tunnel |
+| 8088 | YARN ResourceManager UI | master | You, from your IP (rule `allow-yarn-ui-from-me`) or via SSH tunnel |
 | 8030–8033 | YARN RM RPC | master | NodeManagers, Livy (internal) |
-| 18080 | Spark History Server | master | Operators via SSH tunnel |
+| 18080 | Spark History Server | master | You, from your IP (rule `allow-history-from-me`) or via SSH tunnel |
 | 10000–10010 | Livy RSC callback | master | Interactive-session drivers on workers (internal) |
 | 8041 / 8042 | NodeManager RPC / UI | worker | RM (internal) / operators |
 | dynamic | Spark driver / executors | worker | Each other, Livy (internal) |
-| 22 | SSH | all | Your IP only |
+| 22 | SSH | all | Any (key-only login, needed by GitHub Actions); restrict to your IP otherwise |
 
 ---
 
@@ -630,10 +659,9 @@ Pay-as-you-go ballpark (check the [Azure pricing calculator](https://azure.micro
 
 | Resource | Size | ≈ USD / hour |
 |---|---|---|
-| sb-client | B1s (1 vCPU / 1 GB) | ~0.01 |
-| sb-master | B2ms (2 vCPU / 8 GB) | ~0.08 |
-| sb-worker-1 | B2ms (2 vCPU / 8 GB) | ~0.08 |
-| 3 public IPs | Standard | ~0.015 total |
+| spark-bridge-master | B2ms (2 vCPU / 8 GB) | ~0.08 |
+| spark-bridge-worker | B2ms (2 vCPU / 8 GB) | ~0.08 |
+| 2 public IPs | Standard | ~0.01 total |
 | Storage | a few MB | ~0 |
 
 A 3-hour demo costs well under **1 USD** in compute. Keep it cheap:
@@ -651,11 +679,13 @@ A 3-hour demo costs well under **1 USD** in compute. Keep it cheap:
 | Symptom | Likely cause / fix |
 |---|---|
 | App stuck in `ACCEPTED` | Not enough memory for the ApplicationMaster. Check `activeNodes` ≥ 1, then raise `NM_MEMORY_MB` / `YARN_AM_RESOURCE_PERCENT` or lower `SPARK_DRIVER_MEMORY`. |
-| `activeNodes: 0` | NodeManager can't reach `MASTER_HOST:8031`. Check `docker logs sb-nodemanager`, the `.env` values, and that both VMs are in the same VNet. |
+| `activeNodes: 0` | NodeManager can't reach `MASTER_HOST:8031`. Check `docker logs sb-nodemanager`, the `.env` values, that both VMs are in the same VNet, and that the default `AllowVnetInBound` rule hasn't been removed from either NSG. |
+| Runner: `Cannot reach Livy` | Tunnel not open (`ssh -N -L 8998:localhost:8998 azureuser@<master-ip>`), or your IP changed and `allow-livy-from-me` is stale: update its source IP (or use the SSH tunnel). |
+| GitHub Actions deploy: SSH timeout | The NSG blocks GitHub's runners. Port 22 must allow Any on both VMs' NSGs (the `SSH` rule); check the worker too. |
 | NodeManager `UNHEALTHY` | Local disk almost full: `docker system prune`. The threshold is already 99%. |
 | `ClassNotFoundException ... azurebfs` | You built with the Codespaces Dockerfile. Use `azure/Dockerfile` (the compose files already do). |
 | `403` / `AuthorizationPermissionMismatch` on `abfss://` | Wrong key, or the managed identity lacks *Storage Blob Data Contributor* (role assignments take ~5 min). |
-| `UnknownHostException: sb-worker-1` | Hostnames not resolvable. All VMs must be in the same VNet (Azure DNS), and `MASTER_HOST` must be correct. |
+| `UnknownHostException: spark-bridge-worker` | Hostnames not resolvable. All VMs must be in the same VNet (Azure DNS), and `MASTER_HOST` must be correct. |
 | Livy: `Local path ... cannot be added to user sessions` | Codespaces only: the `file://` path must be under `/data/shared/`. |
 | Interactive session hangs in `starting` | The driver on the worker can't reach Livy on `MASTER_HOST:10000-10010`. |
 | Build fails while downloading | The image pulls Spark and Hadoop from the official `apache/spark` / `apache/hadoop` Docker Hub images, Livy from `dlcdn.apache.org` and jars from Maven Central (no `archive.apache.org`). Re-run the build: finished layers are cached. Docker Hub rate limit (`toomanyrequests`): run `docker login`. |

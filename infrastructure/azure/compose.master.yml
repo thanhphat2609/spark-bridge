@@ -1,5 +1,5 @@
 # =============================================================================
-# SparkBridge on YARN - AZURE  ·  VM "sb-master"  (control plane)
+# SparkBridge on YARN - AZURE  ·  VM "spark-bridge-master"  (control plane)
 #
 # Runs: YARN ResourceManager + Spark History Server + Apache Livy
 # No drivers, no executors, no HDFS here -> a small VM (B2ms, 2 vCPU / 8 GB) is enough.

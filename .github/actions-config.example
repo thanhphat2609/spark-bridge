@@ -9,7 +9,7 @@
 AZURE_STORAGE_KEY=<storage-account-key>
 
 # Private key for SSH into both VMs (the public half is in ~/.ssh/authorized_keys
-# on sb-master and sb-worker-1). Paste the whole file including BEGIN/END lines.
+# on spark-bridge-master and spark-bridge-worker). Paste the whole file including BEGIN/END lines.
 VM_SSH_PRIVATE_KEY=<contents-of-id_ed25519>
 
 # ----- VARIABLES (same page -> Variables tab) -----
@@ -18,7 +18,7 @@ AZURE_STORAGE_CONTAINER=spark
 STORAGE_PREFIX=spark-bridge
 
 # Private VM name used inside the VNet (Azure DNS resolves it)
-MASTER_HOST=sb-master
+MASTER_HOST=spark-bridge-master
 
 # Public IP / DNS the GitHub runner uses to SSH in
 MASTER_SSH_HOST=<master-public-ip>
