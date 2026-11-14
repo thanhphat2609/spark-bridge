@@ -1,4 +1,4 @@
-name: CI
+name: CI/CD
 
 on:
   push:
@@ -35,25 +35,20 @@ jobs:
           cp infrastructure/azure/.env.example infrastructure/azure/.env
           docker compose -f infrastructure/azure/compose.master.yml config -q
           docker compose -f infrastructure/azure/compose.worker.yml config -q
-          docker compose -f infrastructure/codespaces/docker-compose.yml config -q
 
   docker:
-    name: Build ${{ matrix.image }} image
+    name: Build Azure image
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        image: [azure, codespaces]
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
       - uses: docker/build-push-action@v6
         with:
           context: infrastructure
-          file: infrastructure/${{ matrix.image }}/Dockerfile
+          file: infrastructure/azure/Dockerfile
           push: false
-          cache-from: type=gha,scope=${{ matrix.image }}
-          cache-to: type=gha,scope=${{ matrix.image }},mode=max
+          cache-from: type=gha,scope=azure
+          cache-to: type=gha,scope=azure,mode=max
 
   deploy:
     name: Deploy to Azure
