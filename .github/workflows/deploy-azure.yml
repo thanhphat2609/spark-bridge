@@ -2,6 +2,7 @@ name: Deploy to Azure VMs
 
 on:
   workflow_dispatch:
+  workflow_call:
 
 concurrency: deploy-azure
 
@@ -112,4 +113,9 @@ jobs:
 
           scp -i "$HOME/.ssh/id_deploy" infrastructure/azure/.env \
             "$VM_USER@$HOST:~/$APP_DIR/infrastructure/azure/.env"
-          $SSH "chmod 600 ~/$APP_DIR/infrastructure/azure/.env && cd ~/$APP_DIR/infrastructure/azure && docker compose -f $COMPOSE up -d --build"
+          $SSH "chmod 600 ~/$APP_DIR/infrastructure/azure/.env"
+
+          # Install Docker once if the VM does not have it yet (new SSH session below picks up the docker group).
+          $SSH 'command -v docker >/dev/null || { curl -fsSL https://get.docker.com | sudo sh && sudo usermod -aG docker "$USER"; }'
+
+          $SSH "cd ~/$APP_DIR/infrastructure/azure && docker compose -f $COMPOSE up -d --build"

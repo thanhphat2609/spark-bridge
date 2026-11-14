@@ -6,3 +6,5 @@ __pycache__/
 *.pyc
 # Environment files with secrets (copy from .env.example)
 .env
+
+.pytest_cache/

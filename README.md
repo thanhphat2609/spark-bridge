@@ -106,9 +106,11 @@ GitHub Codespace (one Docker host)
 ```
 spark-bridge/
 ├── .github/
-│   ├── workflows/deploy-azure.yml        # manual deploy to the Azure VMs (B9)
+│   ├── workflows/deploy-azure.yml        # deploy to the Azure VMs (manual, or called by CI) (B9)
+│   ├── workflows/ci.yml                  # tests + Docker image builds, then deploy on main
 │   └── actions-config.example            # which GitHub secrets/variables to set
 ├── .devcontainer/devcontainer.json       # Codespaces: 4 cores / 16 GB + Docker-in-Docker
+├── tests/                                # pytest: runner + Livy client
 ├── data/sample/sales.csv                 # demo input data
 ├── scripts/
 │   ├── codespaces_smoke_test.sh          # Codespaces: build, start, wait, submit -> PASS/FAIL
@@ -551,6 +553,8 @@ Then in `.env` set `AZURE_AUTH_MODE=msi`, remove `AZURE_STORAGE_KEY`, and restar
 | `VM_USER` | `azureuser` |
 | `NM_MEMORY_MB` / `NM_VCORES` | `6144` / `2` (optional) |
 | `AZURE_AUTH_MODE` | `key` (default) or `msi` (optional; then also set `AZURE_MSI_CLIENT_ID`, `AZURE_TENANT_ID` if user-assigned) |
+
+**CI then deploy:** [.github/workflows/ci.yml](.github/workflows/ci.yml) runs on every push to `main` and on pull requests: Python compile + `pytest` (`tests/`), shell syntax, compose-file validation, and a build of both Docker images (`azure`, `codespaces`). On a push to `main` the **deploy** job runs only if all of those pass; pull requests never deploy. The deploy installs Docker on a VM if it is missing, so the VMs need nothing but SSH and `sudo`. Run the tests locally with `pip install -r requirements-dev.txt && pytest`.
 
 GitHub-hosted runners must reach the VMs on port 22, and the VMs need `docker` and `git` installed. The repo is cloned to `~/spark-bridge` automatically on the first run.
 
