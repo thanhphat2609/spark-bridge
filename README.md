@@ -36,33 +36,7 @@ The same project runs in two environments:
 
 ### Target architecture (Azure)
 
-```mermaid
-graph LR
-    subgraph CLIENT [VM sb-client - Airflow-lite]
-        C[Python script<br/>requests only]
-        AZ[az CLI<br/>upload jobs + data]
-    end
-
-    subgraph MASTER [VM sb-master - Control plane]
-        L[Apache Livy :8998]
-        RM[YARN ResourceManager :8088]
-        SHS[Spark History Server :18080]
-    end
-
-    subgraph WORKER [VM sb-worker-1 - Compute]
-        NM[YARN NodeManager]
-        D[Spark driver + executors<br/>in YARN containers]
-    end
-
-    C -- "HTTP POST /batches" --> L
-    L -- "spark-submit<br/>yarn / cluster mode" --> RM
-    RM --> NM
-    NM --> D
-    AZ -- "jobs/, data/" --> OBJ
-    D <-- "read / write data" --> OBJ[(Azure Blob ADLS Gen2<br/>jobs · data · staging<br/>spark-history · yarn-logs)]
-    NM -- "aggregated logs" --> OBJ
-    SHS --> OBJ
-```
+![SparkBridge architecture: client submits over HTTP to Livy, which asks YARN to run the Spark driver and executors on the worker; all code, data and logs live in Azure Blob storage](docs/architecture.svg)
 
 The client only ever talks to **port 8998** (Livy) and never needs to know Spark exists.
 

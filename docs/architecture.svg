@@ -1,0 +1,119 @@
+<svg viewBox="0 0 1200 760" xmlns="http://www.w3.org/2000/svg" role="img"
+     aria-label="SparkBridge architecture: a client submits jobs over HTTP to Livy on sb-master, which calls YARN to schedule a Spark driver and executors as containers on sb-worker-1; all code, data and logs live in Azure Blob storage, which the master and worker nodes read and write directly.">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#1f2937"/>
+    </marker>
+  </defs>
+
+  <style>
+    text { font-family: -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif; fill: #1f2937; }
+    .title   { font-size: 15px; font-weight: 600; }
+    .svc     { font-size: 13px; font-weight: 600; }
+    .sub     { font-size: 11px; fill: #4b5563; }
+    .lbl     { font-size: 11px; fill: #374151; }
+    .lblbg   { fill: #ffffff; opacity: 0.92; }
+    .frame   { fill: #f8fafc; stroke: #94a3b8; stroke-width: 1.5; }
+    .node    { fill: #ffffff; stroke: #1f2937; stroke-width: 1.3; }
+    .edge    { fill: none; stroke: #1f2937; stroke-width: 1.3; marker-end: url(#arrow); }
+    .edge2   { fill: none; stroke: #1f2937; stroke-width: 1.3; marker-end: url(#arrow); marker-start: url(#arrow); }
+  </style>
+
+  <rect x="0" y="0" width="1200" height="760" fill="#ffffff"/>
+
+  <!-- ===================== subgraph frames ===================== -->
+  <rect class="frame" x="30"  y="50" width="260" height="330" rx="10"/>
+  <text class="title" x="50" y="78">sb-client</text>
+  <text class="sub"   x="50" y="94">"Airflow-lite" · B1s</text>
+
+  <rect class="frame" x="330" y="50" width="330" height="330" rx="10"/>
+  <text class="title" x="350" y="78">sb-master</text>
+  <text class="sub"   x="350" y="94">control plane · B2ms</text>
+
+  <rect class="frame" x="700" y="50" width="280" height="330" rx="10"/>
+  <text class="title" x="720" y="78">sb-worker-1</text>
+  <text class="sub"   x="720" y="94">compute · B2ms (add more to scale)</text>
+
+  <!-- ===================== client nodes ===================== -->
+  <rect class="node" x="60"  y="150" width="200" height="60" rx="6"/>
+  <text class="svc" x="160" y="175" text-anchor="middle">Python script</text>
+  <text class="sub" x="160" y="193" text-anchor="middle">requests only</text>
+
+  <rect class="node" x="60"  y="250" width="200" height="60" rx="6"/>
+  <text class="svc" x="160" y="275" text-anchor="middle">az CLI</text>
+  <text class="sub" x="160" y="293" text-anchor="middle">upload jobs/ + data/</text>
+
+  <!-- ===================== master nodes ===================== -->
+  <rect class="node" x="360" y="120" width="270" height="56" rx="6"/>
+  <text class="svc" x="495" y="143" text-anchor="middle">Apache Livy :8998</text>
+  <text class="sub" x="495" y="160" text-anchor="middle">only port clients ever call</text>
+
+  <rect class="node" x="360" y="200" width="270" height="56" rx="6"/>
+  <text class="svc" x="495" y="223" text-anchor="middle">YARN ResourceManager :8088</text>
+  <text class="sub" x="495" y="240" text-anchor="middle">schedules, no HDFS</text>
+
+  <rect class="node" x="360" y="280" width="270" height="56" rx="6"/>
+  <text class="svc" x="495" y="303" text-anchor="middle">Spark History Server :18080</text>
+  <text class="sub" x="495" y="320" text-anchor="middle">reads event logs from storage</text>
+
+  <!-- ===================== worker nodes ===================== -->
+  <rect class="node" x="730" y="150" width="220" height="60" rx="6"/>
+  <text class="svc" x="840" y="175" text-anchor="middle">YARN NodeManager</text>
+  <text class="sub" x="840" y="193" text-anchor="middle">registers with RM</text>
+
+  <rect class="node" x="730" y="250" width="220" height="60" rx="6"/>
+  <text class="svc" x="840" y="271" text-anchor="middle">Spark driver + executors</text>
+  <text class="sub" x="840" y="289" text-anchor="middle">YARN containers, dynamic alloc</text>
+
+  <!-- ===================== storage ===================== -->
+  <g transform="translate(490,560)">
+    <path class="node" d="M0,0 a200,18 0 0 1 400,0 l0,80 a200,18 0 0 1 -400,0 z"/>
+    <path class="node" d="M0,0 a200,18 0 0 0 400,0" fill="none"/>
+    <text class="svc" x="200" y="55" text-anchor="middle">Azure Blob · ADLS Gen2</text>
+    <text class="sub" x="200" y="72" text-anchor="middle">jobs · data · staging · spark-history · yarn-logs</text>
+  </g>
+
+  <!-- ===================== edges ===================== -->
+  <!-- client -> livy -->
+  <line class="edge" x1="260" y1="170" x2="358" y2="148"/>
+  <rect class="lblbg" x="235" y="140" width="130" height="16"/>
+  <text class="lbl" x="300" y="152" text-anchor="middle">HTTP POST /batches</text>
+
+  <!-- livy -> RM -->
+  <line class="edge" x1="495" y1="176" x2="495" y2="198"/>
+  <rect class="lblbg" x="400" y="178" width="190" height="16"/>
+  <text class="lbl" x="495" y="190" text-anchor="middle">spark-submit --master yarn</text>
+
+  <!-- RM -> NM (cross-frame) -->
+  <line class="edge" x1="630" y1="222" x2="728" y2="178"/>
+  <rect class="lblbg" x="615" y="188" width="130" height="16"/>
+  <text class="lbl" x="680" y="200" text-anchor="middle">schedule container</text>
+
+  <!-- NM -> driver/executors -->
+  <line class="edge" x1="840" y1="210" x2="840" y2="248"/>
+  <rect class="lblbg" x="785" y="222" width="110" height="16"/>
+  <text class="lbl" x="840" y="234" text-anchor="middle">launch AM + driver</text>
+
+  <!-- az cli -> storage -->
+  <line class="edge" x1="260" y1="295" x2="500" y2="560"/>
+  <rect class="lblbg" x="310" y="430" width="100" height="16"/>
+  <text class="lbl" x="360" y="442" text-anchor="middle">jobs/, data/</text>
+
+  <!-- SHS -> storage -->
+  <line class="edge" x1="520" y1="336" x2="580" y2="558"/>
+  <rect class="lblbg" x="500" y="440" width="90" height="16"/>
+  <text class="lbl" x="545" y="452" text-anchor="middle">event logs</text>
+
+  <!-- driver <-> storage -->
+  <line class="edge2" x1="800" y1="310" x2="680" y2="558"/>
+  <rect class="lblbg" x="690" y="430" width="140" height="16"/>
+  <text class="lbl" x="760" y="442" text-anchor="middle">read / write data</text>
+
+  <!-- NM -> storage (aggregated logs) -->
+  <line class="edge" x1="900" y1="210" x2="760" y2="558"/>
+  <rect class="lblbg" x="800" y="380" width="130" height="16"/>
+  <text class="lbl" x="865" y="392" text-anchor="middle">aggregated logs</text>
+
+  <!-- ===================== legend caption ===================== -->
+  <text class="sub" x="30" y="420">Target architecture · Azure demo. Codespaces mirrors the same roles as containers on one Docker host.</text>
+</svg>
