@@ -119,3 +119,33 @@ jobs:
           $SSH 'command -v docker >/dev/null || { curl -fsSL https://get.docker.com | sudo sh && sudo usermod -aG docker "$USER"; }'
 
           $SSH "cd ~/$APP_DIR/infrastructure/azure && docker compose -f $COMPOSE up -d --build"
+
+  verify:
+    name: Verify the worker joined the cluster
+    needs: deploy-vm
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configure SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.VM_SSH_PRIVATE_KEY }}
+          HOST: ${{ vars.MASTER_SSH_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          ssh-keyscan -H "$HOST" >> ~/.ssh/known_hosts
+
+      - name: Wait for activeNodes >= 1
+        env:
+          HOST: ${{ vars.MASTER_SSH_HOST }}
+          VM_USER: ${{ vars.VM_USER }}
+        run: |
+          for i in $(seq 1 24); do
+            nodes=$(ssh -i "$HOME/.ssh/id_deploy" "$VM_USER@$HOST" \
+              "curl -sf http://localhost:8088/ws/v1/cluster/metrics" | grep -o '"activeNodes":[0-9]*' | cut -d: -f2 || true)
+            echo "activeNodes=${nodes:-unknown} (attempt $i/24)"
+            [ "${nodes:-0}" -ge 1 ] && exit 0
+            sleep 10
+          done
+          echo "::error::No NodeManager registered. Most likely the worker is in a different VNet than the master (same private IP on both VMs). See README: B1 VM checklist."
+          exit 1

@@ -14,7 +14,7 @@
 # Usage (from repo root):
 #   docker compose -f infrastructure/codespaces/docker-compose.yml up -d --build
 #   docker compose -f infrastructure/codespaces/docker-compose.yml run --rm client
-# or simply:  bash scripts/codespaces_smoke_test.sh
+# or simply:  bash scripts/archive/codespaces_smoke_test.sh
 # =============================================================================
 
 x-common: &common
@@ -120,7 +120,7 @@ services:
     # "Upload" jobs + sample data to storage, then submit through Livy
     command: >
       sh -c "pip install -q -r src/requirements.txt &&
-             sh scripts/upload_local_storage.sh &&
+             sh scripts/archive/upload_local_storage.sh &&
              python src/runner/main.py http://master:8998 local jobs/pi_estimation.py"
 
 volumes:

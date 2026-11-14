@@ -5,11 +5,11 @@
 #   2. wait for Livy and for the NodeManager to register with YARN
 #   3. run the client container: upload jobs/data -> submit via Livy -> PASS/FAIL
 #
-#   bash scripts/codespaces_smoke_test.sh          # run
-#   bash scripts/codespaces_smoke_test.sh down     # stop and delete volumes
+#   bash scripts/archive/codespaces_smoke_test.sh          # run
+#   bash scripts/archive/codespaces_smoke_test.sh down     # stop and delete volumes
 # =============================================================================
 set -euo pipefail
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/../.."
 COMPOSE="docker compose -f infrastructure/codespaces/docker-compose.yml"
 
 if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then

@@ -113,9 +113,10 @@ spark-bridge/
 ├── tests/                                # pytest: runner + Livy client
 ├── data/sample/sales.csv                 # demo input data
 ├── scripts/
-│   ├── codespaces_smoke_test.sh          # Codespaces: build, start, wait, submit -> PASS/FAIL
-│   ├── upload_local_storage.sh           # Codespaces: "upload" jobs/data into the shared volume
-│   └── deploy_jobs_azure.sh              # Azure: upload jobs/data to Blob with az CLI
+│   ├── deploy_jobs_azure.sh              # Azure: upload jobs/data to Blob with az CLI (used by CI/CD)
+│   └── archive/                          # Codespaces QA only, not used by CI/CD
+│       ├── codespaces_smoke_test.sh      # build, start, wait, submit -> PASS/FAIL
+│       └── upload_local_storage.sh       # "upload" jobs/data into the shared volume
 ├── src/
 │   ├── jobs/                             # PySpark scripts -- run ON the cluster
 │   │   ├── pi_estimation.py              # compute-only smoke job
@@ -169,6 +170,8 @@ git push origin main
 
 ## 5. Part A: Run the QA Demo on GitHub Codespaces
 
+> **Archived.** CI/CD and the Azure deploy no longer touch Codespaces: CI builds only the Azure image, and the Codespaces scripts live in `scripts/archive/`. This section is kept for trying the stack without Azure. It runs only the pi job (the ETL job's paths point at `abfss://`).
+
 **Goal:** prove the image builds and a job runs end-to-end through Livy → YARN, without any Azure account.
 
 ### A1. Create the Codespace
@@ -182,7 +185,7 @@ git push origin main
 In the Codespace terminal:
 
 ```bash
-bash scripts/codespaces_smoke_test.sh
+bash scripts/archive/codespaces_smoke_test.sh
 ```
 
 What it does:
@@ -296,7 +299,7 @@ python src/runner/main.py http://localhost:8998 local jobs/pi_estimation.py
 ### A4. Clean up
 
 ```bash
-bash scripts/codespaces_smoke_test.sh down     # stop containers and delete volumes
+bash scripts/archive/codespaces_smoke_test.sh down     # stop containers and delete volumes
 ```
 
 Then **stop the Codespace** (GitHub → Codespaces → ⋯ → Stop). It bills by core-hour while running.
@@ -364,9 +367,30 @@ done
 az vm list-ip-addresses -g $RG -o table
 ```
 
+#### Creating the VMs in the Azure Portal: checklist (do this for BOTH VMs)
+
+The most common failure is a worker that cannot see the master because the portal created it in a **new VNet**. Both VMs then get the same private IP (`172.16.0.4`), YARN shows `activeNodes: 0` and jobs sit in `starting` forever. A VM cannot change VNet afterwards, so get it right at creation:
+
+| Tab | Setting | Value |
+|---|---|---|
+| Basics | Region | The same region for both VMs and the storage account |
+| Basics | Size / image | B2ms (matches `NM_MEMORY_MB=6144`, `NM_VCORES=2`) / Ubuntu 22.04 |
+| Basics | SSH key | Create it once on the master; on the worker choose **Use existing key stored in Azure** so one `.pem` and one `VM_SSH_PRIVATE_KEY` secret work for both |
+| **Networking** | **Virtual network / Subnet** | **The master's existing VNet and subnet** (e.g. `vnet-eastus-1` / `snet-eastus-1`). Never accept a new VNet for the worker |
+| Networking | Public IP / NSG / inbound ports | New public IP, **Basic** NSG, allow **SSH (22)** |
+
+Right after creating the worker, verify before deploying anything:
+
+```bash
+hostname -I                          # run on BOTH VMs: the private IPs must DIFFER (e.g. 172.16.0.4 and 172.16.0.5)
+getent hosts spark-bridge-master     # on the worker: must print the master's private IP
+```
+
+The deploy workflow (B9) also checks this: after both VMs are deployed it fails if no NodeManager has registered with the ResourceManager.
+
 #### Network rules (NSG)
 
-Each VM has its own NSG (Portal -> VM -> Networking -> Network settings). Both VMs must be in the **same VNet** (`vnet-eastus-1`): then Azure's default `AllowVnetInBound` rule (priority 65000) already lets master and worker reach each other on every port (YARN, Livy callback, Spark's random ports), so no custom rule is needed for that. Use your own public IP where `<my-ip>` appears (check it at ifconfig.me).
+Each VM has its own NSG (Portal -> VM -> Networking -> Network settings). Both VMs must be in the **same VNet** (`vnet-eastus-1`). When you create the second VM in the portal, pick the *existing* VNet and subnet on the Networking tab; the portal's default is a brand-new VNet, which gets the same address range and the same first private IP (e.g. both VMs end up as `172.16.0.4`), so the VMs cannot see each other. Verify with `hostname -I` on both VMs: the IPs must differ. If they are in the same VNet: then Azure's default `AllowVnetInBound` rule (priority 65000) already lets master and worker reach each other on every port (YARN, Livy callback, Spark's random ports), so no custom rule is needed for that. Use your own public IP where `<my-ip>` appears (check it at ifconfig.me).
 
 **Master NSG, inbound**
 
@@ -454,6 +478,8 @@ docker compose -f compose.worker.yml build
 docker compose -f compose.worker.yml run --rm nodemanager smoke-storage
 docker compose -f compose.worker.yml up -d
 ```
+
+Before starting the worker, confirm it is in the master's VNet: `hostname -I` must print a different private IP than on the master, and `getent hosts spark-bridge-master` must resolve (see the VM checklist in B1).
 
 Verify the worker registered with YARN (on either VM):
 
@@ -554,7 +580,7 @@ Then in `.env` set `AZURE_AUTH_MODE=msi`, remove `AZURE_STORAGE_KEY`, and restar
 | `NM_MEMORY_MB` / `NM_VCORES` | `6144` / `2` (optional) |
 | `AZURE_AUTH_MODE` | `key` (default) or `msi` (optional; then also set `AZURE_MSI_CLIENT_ID`, `AZURE_TENANT_ID` if user-assigned) |
 
-**CI then deploy:** [.github/workflows/ci.yml](.github/workflows/ci.yml) runs on every push to `main` and on pull requests: Python compile + `pytest` (`tests/`), shell syntax, compose-file validation, and a build of the Azure Docker image. On a push to `main` the **deploy** job runs only if all of those pass; pull requests never deploy. The deploy installs Docker on a VM if it is missing, so the VMs need nothing but SSH and `sudo`. Run the tests locally with `pip install -r requirements-dev.txt && pytest`.
+**CI then deploy:** [.github/workflows/ci.yml](.github/workflows/ci.yml) runs on every push to `main` and on pull requests: Python compile + `pytest` (`tests/`), shell syntax, compose-file validation, and a build of the Azure Docker image. On a push to `main` the **deploy** job runs only if all of those pass; pull requests never deploy. The deploy installs Docker on a VM if it is missing, so the VMs need nothing but SSH and `sudo`. A final **verify** step fails the run if no NodeManager has registered with the ResourceManager (usually: the worker is in a different VNet). Run the tests locally with `pip install -r requirements-dev.txt && pytest`.
 
 GitHub-hosted runners must reach the VMs on port 22, and the VMs need `docker` and `git` installed. The repo is cloned to `~/spark-bridge` automatically on the first run.
 
@@ -683,6 +709,7 @@ A 3-hour demo costs well under **1 USD** in compute. Keep it cheap:
 | Symptom | Likely cause / fix |
 |---|---|
 | App stuck in `ACCEPTED` | Not enough memory for the ApplicationMaster. Check `activeNodes` ≥ 1, then raise `NM_MEMORY_MB` / `YARN_AM_RESOURCE_PERCENT` or lower `SPARK_DRIVER_MEMORY`. |
+| App stuck in `ACCEPTED` / runner prints `Batch 0 state: starting` forever, `activeNodes: 0`, worker log shows `UnknownHostException: spark-bridge-master` | The worker is in a different VNet from the master (both show private IP `172.16.0.4`). Recreate the worker VM on the master's VNet and subnet (Networking tab: choose the existing VNet). A VM cannot change VNet, all NICs of one VM must be in the same VNet, and peering cannot fix it because the address ranges overlap. |
 | `activeNodes: 0` | NodeManager can't reach `MASTER_HOST:8031`. Check `docker logs sb-nodemanager`, the `.env` values, that both VMs are in the same VNet, and that the default `AllowVnetInBound` rule hasn't been removed from either NSG. |
 | Runner: `Cannot reach Livy` | Tunnel not open (`ssh -N -L 8998:localhost:8998 azureuser@<master-ip>`), or your IP changed and `allow-livy-from-me` is stale: update its source IP (or use the SSH tunnel). |
 | GitHub Actions deploy: SSH timeout | The NSG blocks GitHub's runners. Port 22 must allow Any on both VMs' NSGs (the `SSH` rule); check the worker too. |
