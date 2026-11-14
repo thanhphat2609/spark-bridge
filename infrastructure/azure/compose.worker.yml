@@ -1,5 +1,5 @@
 # =============================================================================
-# SparkBridge on YARN - AZURE  ·  VM "spark-bridge-worker"  (compute)
+# SparkBridge on YARN - AZURE  ·  VM "spark-bridge-worker-1"  (compute)
 #
 # Runs: YARN NodeManager.
 # Spark drivers (cluster deploy mode) AND executors run in YARN containers here.

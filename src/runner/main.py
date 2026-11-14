@@ -10,6 +10,7 @@ import argparse
 import logging
 import os
 import sys
+import time
 
 from livy_client import LivyClient
 
@@ -34,7 +35,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("livy_url", help="e.g. http://<master-ip>:8998")
     p.add_argument("storage", help="ADLS account name (e.g. dataplatform), or 'local' for the Codespaces volume")
     p.add_argument("path", help="<container>/<path/to/job.py>")
-    p.add_argument("--name", help="Spark app name (default: job file name)")
+    p.add_argument("--name", help="Spark app name (default: <job file name>-<timestamp>)")
     p.add_argument("--executors", type=int, help="number of executors")
     p.add_argument("--cores", type=int, help="cores per executor")
     p.add_argument("--executor-memory", help="e.g. 2g")
@@ -52,7 +53,8 @@ def main() -> None:
         sys.exit(1)
 
     job_uri = build_uri(a.storage, a.path)
-    name = a.name or os.path.splitext(os.path.basename(job_uri))[0]
+    # Livy rejects a batch whose name matches one it still tracks, so make the default unique.
+    name = a.name or f"{os.path.splitext(os.path.basename(job_uri))[0]}-{time.strftime('%Y%m%d-%H%M%S')}"
     logger.info("Submitting %s", job_uri)
 
     job = client.submit_batch(
