@@ -9,7 +9,6 @@ Submit via Livy batch endpoint:
     POST http://<livy-host>:8998/batches
     {
         "file": "<STORAGE_ROOT>/jobs/pi_estimation.py",
-        "args": ["2000000"],
         "name": "PiEstimation"
     }
 """

@@ -112,7 +112,6 @@ services:
     environment:
       LIVY_URL: http://master:8998
       STORAGE_ROOT: file:///data/shared
-      YARN_QUEUE: etl
     volumes:
       - ../../src:/app/src:ro
       - ../../data:/app/data:ro
@@ -122,7 +121,7 @@ services:
     command: >
       sh -c "pip install -q -r src/requirements.txt &&
              sh scripts/upload_local_storage.sh &&
-             python src/client/run_demo.py"
+             python src/runner/main.py http://master:8998 local jobs/pi_estimation.py"
 
 volumes:
   shared:          # stands in for the Azure Blob container

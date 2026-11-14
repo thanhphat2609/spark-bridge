@@ -4,24 +4,21 @@ Sales ETL - PySpark Batch Job (reads and writes object storage)
 Reads a raw CSV, aggregates revenue per category and day, writes Parquet,
 then reads the Parquet back to prove the round-trip.
 
-Paths are passed as arguments so the same job runs on any storage:
-    Azure      : abfss://spark@<account>.dfs.core.windows.net/spark-bridge/data/...
-    Codespaces : file:///data/shared/data/...
+Input/output paths are defined below (INPUT_PATH / OUTPUT_PATH); edit them
+to point at your storage account and container.
 
 Submit via Livy batch endpoint:
     POST http://<livy-host>:8998/batches
     {
-        "file":  "<STORAGE_ROOT>/jobs/sales_etl.py",
-        "args":  ["<STORAGE_ROOT>/data/raw/sales.csv",
-                  "<STORAGE_ROOT>/data/curated/sales_by_category"],
-        "queue": "etl"
+        "file":  "<STORAGE_ROOT>/jobs/sales_etl.py"
     }
 """
 
-import sys
-
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import col, count, sum as spark_sum
+
+INPUT_PATH = "abfss://data@dataplatform.dfs.core.windows.net/raw/sales.csv"
+OUTPUT_PATH = "abfss://data@dataplatform.dfs.core.windows.net/curated/sales_by_category"
 
 
 def run(input_path: str, output_path: str) -> None:
@@ -53,6 +50,4 @@ def run(input_path: str, output_path: str) -> None:
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 3:
-        sys.exit("usage: sales_etl.py <input_csv_uri> <output_parquet_uri>")
-    run(sys.argv[1], sys.argv[2])
+    run(INPUT_PATH, OUTPUT_PATH)

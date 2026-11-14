@@ -45,7 +45,6 @@ The client only ever talks to **port 8998** (Livy) and never needs to know Spark
 | Problem with Standalone | What YARN gives us |
 |---|---|
 | PySpark can't run in `cluster` deploy mode, so every driver runs on the master/Livy VM, which becomes the memory bottleneck. | Drivers run in YARN containers on the **worker**. The master only hosts small control-plane daemons. |
-| No queues: every job competes first-come, first-served. | **Capacity Scheduler queues**: `default`, `etl`, `adhoc`. |
 | Limited dynamic allocation. | **Dynamic allocation with shuffle tracking**: executors scale 0 → N per job, no extra shuffle daemon. |
 | Logs disappear with containers. | **Log aggregation** to object storage, plus the Spark History Server. |
 | Config differs from Dataproc. | Same model as Dataproc (`spark.master=yarn`), so jobs and configs are portable. |
@@ -118,10 +117,9 @@ spark-bridge/
 │   │   ├── sales_etl.py                  # CSV in storage -> Parquet in storage
 │   │   ├── word_count.py
 │   │   └── sales_report.py
-│   ├── client/                           # runs on ANY machine (requests only)
-│   │   ├── livy_client.py                # reusable LivyClient (queue, pyFiles, logs)
-│   │   ├── run_demo.py                   # demo: submits PiEstimation + SalesETL
-│   │   └── example_interactive_session.py  # send PySpark snippets via a Livy session
+│   ├── runner/                           # runs on ANY machine (requests only)
+│   │   ├── main.py                       # CLI: python main.py <livy_url> <storage> <container/file.py>
+│   │   └── livy_client.py                # reusable LivyClient (queue, pyFiles, logs)
 │   └── requirements.txt
 └── infrastructure/
     ├── common/                           # shared by both images
@@ -189,17 +187,14 @@ What it does:
 | 1 | Builds `spark-bridge-yarn:codespaces` (downloads Spark, Hadoop, Livy, ~1.2 GB) | 5–10 min first time |
 | 2 | Starts `resourcemanager`, `history`, `livy` (hostname `master`) and `nodemanager` (hostname `worker`) | ~30 s |
 | 3 | Waits until YARN is up, the NodeManager is registered, and Livy and History answer | ~30–60 s |
-| 4 | Runs the `client` container: copies `src/jobs/*.py` + `data/sample/sales.csv` into the shared volume, then submits **PiEstimation** and **SalesETL** through Livy | 1–2 min |
+| 4 | Runs the `client` container: copies `src/jobs/*.py` + `data/sample/sales.csv` into the shared volume, then submits **PiEstimation** through Livy | 1–2 min |
 
 ### A3. Check the result
 
 Expected end of output:
 
 ```
-================ DEMO RESULT ================
-  PiEstimation    PASS
-  SalesETL        PASS
-=============================================
+[INFO]  pi_estimation -> state=success  yarnAppId=application_...
 ```
 
 Open the **Ports** tab in Codespaces and click:
@@ -225,7 +220,7 @@ docker exec sb-resourcemanager ls -R /data/shared/data/curated    # Parquet outp
 You can also submit from the Codespace terminal itself (after the client container has uploaded the files once):
 
 ```bash
-LIVY_URL=http://localhost:8998 STORAGE_ROOT=file:///data/shared python src/client/run_demo.py
+python src/runner/main.py http://localhost:8998 local jobs/pi_estimation.py
 ```
 
 #### Calling Livy through the forwarded URL (`https://<codespace>-8998.app.github.dev`)
@@ -243,13 +238,55 @@ Codespaces forwarded ports are **private** by default: a request without your Gi
 echo $GITHUB_TOKEN
 
 # 2) on your laptop
-export LIVY_URL=https://<codespace>-8998.app.github.dev
 export LIVY_GITHUB_TOKEN=<token from step 1>      # treat it like a password; it expires with the codespace
-export STORAGE_ROOT=file:///data/shared        # paths are resolved inside the cluster, not on your laptop
-python src/client/run_demo.py
+python src/runner/main.py https://<codespace>-8998.app.github.dev local jobs/pi_estimation.py
 ```
 
 Set the URL with the environment variable rather than editing the default in code: each codespace gets a different URL, and the code stays the same for Azure.
+
+### Running jobs with the runner
+
+`src/runner/main.py` submits one PySpark file as a Livy batch job, waits, and exits non-zero on failure (so CI can use it).
+
+```
+python src/runner/main.py <livy_url> <storage_account> <container/path/to/job.py> [options]
+```
+
+| Positional | Meaning |
+|---|---|
+| `livy_url` | Livy endpoint, e.g. `http://sb-master:8998` |
+| `storage_account` | ADLS account name (e.g. `dataplatform`), or `local` for the Codespaces shared volume |
+| `container/path` | First segment is the container, the rest is the blob path. Becomes `abfss://<container>@<account>.dfs.core.windows.net/<path>` |
+
+| Option | Default | Meaning |
+|---|---|---|
+| `--name` | file name | Spark app name |
+| `--executors N` | cluster default | Number of executors |
+| `--cores N` | cluster default | Cores per executor |
+| `--executor-memory 2g` | cluster default | Executor heap |
+| `--driver-memory 1g` | cluster default | Driver heap |
+| `--timeout` | 3600 | Max seconds to wait |
+
+The runner only runs and configures the job. Data paths live inside the job code (e.g. `INPUT_PATH` in `sales_etl.py`), not on the command line.
+
+`LIVY_GITHUB_TOKEN` (env) is only needed for a private Codespaces forwarded URL.
+
+Examples:
+
+```bash
+# Compute-only job
+python src/runner/main.py http://sb-master:8998 dataplatform jobs/pi_estimation.py
+
+# ETL: CSV -> Parquet (input/output paths are defined inside sales_etl.py), explicit sizing
+python src/runner/main.py http://sb-master:8998 dataplatform jobs/sales_etl.py \
+  --executors 4 --cores 2 --executor-memory 2g --driver-memory 1g
+
+# Custom app name
+python src/runner/main.py http://sb-master:8998 dataplatform jobs/word_count.py --name WordCount
+
+# Codespaces (local shared volume)
+python src/runner/main.py http://localhost:8998 local jobs/pi_estimation.py
+```
 
 ### A4. Clean up
 
@@ -259,7 +296,7 @@ bash scripts/codespaces_smoke_test.sh down     # stop containers and delete volu
 
 Then **stop the Codespace** (GitHub → Codespaces → ⋯ → Stop). It bills by core-hour while running.
 
-**Done when:** both jobs PASS, the apps show `SUCCEEDED` in the RM UI, and they're listed in the History Server.
+**Done when:** both jobs end in `state=success`, the apps show `SUCCEEDED` in the RM UI, and they're listed in the History Server.
 
 ---
 
@@ -412,20 +449,10 @@ export STORAGE_PREFIX=spark-bridge
 bash scripts/deploy_jobs_azure.sh
 
 # 2) Submit through Livy (private network)
-export LIVY_URL=http://sb-master:8998
-export STORAGE_ROOT=abfss://spark@$AZURE_STORAGE_ACCOUNT.dfs.core.windows.net/spark-bridge
-export YARN_QUEUE=etl
-python3 src/client/run_demo.py
+python3 src/runner/main.py http://sb-master:8998 $AZURE_STORAGE_ACCOUNT spark/spark-bridge/jobs/pi_estimation.py
 ```
 
-Expected:
-
-```
-================ DEMO RESULT ================
-  PiEstimation    PASS
-  SalesETL        PASS
-=============================================
-```
+See [Running jobs with the runner](#running-jobs-with-the-runner) for all options.
 
 ### B6. Verify and show the demo
 
@@ -437,7 +464,7 @@ ssh -L 8998:localhost:8998 -L 8088:localhost:8088 -L 18080:localhost:18080 azure
 
 | Check | Where |
 |---|---|
-| Both apps `SUCCEEDED`, in queue `etl` | http://localhost:8088 |
+| App `SUCCEEDED` | http://localhost:8088 |
 | Driver ran on **sb-worker-1**, not the master | RM UI → app → attempt → container host |
 | Job stdout (`df.show()` of the sales report) | RM UI → app → **Logs**, or History |
 | Event logs / history | http://localhost:18080 |
@@ -472,15 +499,41 @@ done
 
 Then in `.env` set `AZURE_AUTH_MODE=msi`, remove `AZURE_STORAGE_KEY`, and restart both stacks. No secret is stored anywhere.
 
+### B9. Optional: deploy with GitHub Actions (no hand-written `.env`)
+
+[.github/workflows/deploy-azure.yml](.github/workflows/deploy-azure.yml) (manual: **Actions -> Deploy to Azure VMs -> Run workflow**) uploads the jobs to ADLS, renders `.env` on the runner, clones/updates the repo on each VM (`git fetch` of the commit being deployed, using the run's temporary token), copies `.env` over SSH and runs `docker compose up -d --build`. In the repo go to **Settings -> Secrets and variables -> Actions**.
+
+**Secrets**
+
+| Name | Value |
+|---|---|
+| `AZURE_STORAGE_KEY` | Storage account key (also used to upload jobs, even with `AZURE_AUTH_MODE=msi`) |
+| `VM_SSH_PRIVATE_KEY` | Private key whose public half is in `~/.ssh/authorized_keys` on both VMs |
+
+**Variables**
+
+| Name | Example |
+|---|---|
+| `AZURE_STORAGE_ACCOUNT` | `dataplatform` |
+| `AZURE_STORAGE_CONTAINER` | `spark` |
+| `STORAGE_PREFIX` | `spark-bridge` |
+| `MASTER_HOST` | `sb-master` (private name used inside the VNet) |
+| `MASTER_SSH_HOST` / `WORKER_SSH_HOST` | Public IP or DNS the runner can SSH to |
+| `VM_USER` | `azureuser` |
+| `NM_MEMORY_MB` / `NM_VCORES` | `6144` / `2` (optional) |
+| `AZURE_AUTH_MODE` | `key` (default) or `msi` (optional; then also set `AZURE_MSI_CLIENT_ID`, `AZURE_TENANT_ID` if user-assigned) |
+
+GitHub-hosted runners must reach the VMs on port 22, and the VMs need `docker` and `git` installed. The repo is cloned to `~/spark-bridge` automatically on the first run.
+
 ---
 
 ## 7. How a Job Flows
 
-1. **Client** → `POST /batches` on Livy with `file=<STORAGE_ROOT>/jobs/sales_etl.py`, `args=[input, output]`, `queue=etl`.
+1. **Client** → `POST /batches` on Livy with `file=<STORAGE_ROOT>/jobs/sales_etl.py`.
 2. **Livy** runs `spark-submit --master yarn --deploy-mode cluster`. Spark's jars are **not** uploaded: they're already in the image on every node (`spark.yarn.jars=local:/opt/spark/jars/*`, PySpark via `PYSPARK_ARCHIVES_PATH=local:...`). Only a small `__spark_conf__.zip` goes to `<STORAGE_ROOT>/staging`.
 3. **YARN ResourceManager** starts the ApplicationMaster + **driver** in a container on the **worker**. Executors scale from 0 to `SPARK_MAX_EXECUTORS` with dynamic allocation (shuffle tracking keeps executors that still hold shuffle data).
 4. The job reads `data/raw/sales.csv` and writes `data/curated/...` directly in storage.
-5. On finish, the event log goes to `<STORAGE_ROOT>/spark-history` (History Server) and container logs go to `<STORAGE_ROOT>/yarn-logs`. Livy reports `success`, and the client prints PASS.
+5. On finish, the event log goes to `<STORAGE_ROOT>/spark-history` (History Server) and container logs go to `<STORAGE_ROOT>/yarn-logs`. Livy reports `success`, and the runner exits 0.
 
 ---
 
@@ -503,7 +556,7 @@ All settings are environment variables (`infrastructure/azure/.env` on Azure, th
 | `YARN_LOCAL_DIR_HOST` | – | `/mnt/yarn` | Worker shuffle/spill dir (Azure temp SSD) |
 | `LIVY_LOCAL_DIR_WHITELIST` | `/data/shared/` | – | Lets Livy accept `file://` job paths (Codespaces only) |
 
-YARN queues (`common/conf/capacity-scheduler.xml.tpl`): `default` 40%, `etl` 40%, `adhoc` 20%. Each can borrow up to 100% when the cluster is idle.
+YARN queues (`common/conf/capacity-scheduler.xml.tpl`): a single `default` queue with 100% of the cluster.
 
 ---
 
@@ -519,7 +572,6 @@ curl -X POST http://sb-master:8998/batches -H "Content-Type: application/json" -
   "file":  "'$ROOT'/jobs/sales_etl.py",
   "args":  ["'$ROOT'/data/raw/sales.csv", "'$ROOT'/data/curated/sales_by_category"],
   "name":  "SalesETL",
-  "queue": "etl",
   "driverMemory":   "1g",
   "executorMemory": "1g"
 }'
@@ -536,7 +588,7 @@ curl http://sb-master:8998/batches/<batch_id>/log      # spark-submit / YARN cli
 
 ```bash
 curl -X POST http://sb-master:8998/sessions -H "Content-Type: application/json" \
-  -d '{"kind": "pyspark", "queue": "adhoc"}'
+  -d '{"kind": "pyspark"}'
 curl -X POST http://sb-master:8998/sessions/<session_id>/statements -H "Content-Type: application/json" \
   -d '{"code": "spark.version"}'
 ```
@@ -550,7 +602,6 @@ client = LivyClient("http://sb-master:8998")
 job = client.submit_batch(
     file=f"{ROOT}/jobs/pi_estimation.py",
     args=["1000000"],
-    queue="etl",
 )
 print(job.wait())            # 'success'
 print(job.get_info()["appId"])

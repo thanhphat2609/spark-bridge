@@ -1,0 +1,115 @@
+name: Deploy to Azure VMs
+
+on:
+  workflow_dispatch:
+
+concurrency: deploy-azure
+
+env:
+  APP_DIR: spark-bridge
+
+jobs:
+  jobs-to-blob:
+    name: Upload PySpark jobs + sample data to ADLS
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Upload
+        env:
+          AZURE_STORAGE_ACCOUNT: ${{ vars.AZURE_STORAGE_ACCOUNT }}
+          AZURE_STORAGE_CONTAINER: ${{ vars.AZURE_STORAGE_CONTAINER }}
+          STORAGE_PREFIX: ${{ vars.STORAGE_PREFIX }}
+          AZURE_STORAGE_KEY: ${{ secrets.AZURE_STORAGE_KEY }}
+        run: bash scripts/deploy_jobs_azure.sh
+
+  deploy-vm:
+    name: Deploy ${{ matrix.role }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - role: master
+            host_var: MASTER_SSH_HOST
+            compose: compose.master.yml
+          - role: worker
+            host_var: WORKER_SSH_HOST
+            compose: compose.worker.yml
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Render .env (never printed, never committed)
+        env:
+          AZURE_STORAGE_ACCOUNT: ${{ vars.AZURE_STORAGE_ACCOUNT }}
+          AZURE_STORAGE_CONTAINER: ${{ vars.AZURE_STORAGE_CONTAINER }}
+          STORAGE_PREFIX: ${{ vars.STORAGE_PREFIX }}
+          MASTER_HOST: ${{ vars.MASTER_HOST }}
+          AZURE_AUTH_MODE: ${{ vars.AZURE_AUTH_MODE || 'key' }}
+          AZURE_MSI_CLIENT_ID: ${{ vars.AZURE_MSI_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+          NM_MEMORY_MB: ${{ vars.NM_MEMORY_MB || '6144' }}
+          NM_VCORES: ${{ vars.NM_VCORES || '2' }}
+          AZURE_STORAGE_KEY: ${{ secrets.AZURE_STORAGE_KEY }}
+        run: |
+          umask 077
+          {
+            echo "MASTER_HOST=${MASTER_HOST}"
+            echo "STORAGE_BACKEND=azure"
+            echo "AZURE_STORAGE_ACCOUNT=${AZURE_STORAGE_ACCOUNT}"
+            echo "STORAGE_ROOT=abfss://${AZURE_STORAGE_CONTAINER}@${AZURE_STORAGE_ACCOUNT}.dfs.core.windows.net/${STORAGE_PREFIX}"
+            echo "AZURE_AUTH_MODE=${AZURE_AUTH_MODE}"
+            if [ "${AZURE_AUTH_MODE}" = "msi" ]; then
+              echo "AZURE_MSI_CLIENT_ID=${AZURE_MSI_CLIENT_ID}"
+              echo "AZURE_TENANT_ID=${AZURE_TENANT_ID}"
+            else
+              echo "AZURE_STORAGE_KEY=${AZURE_STORAGE_KEY}"
+            fi
+            echo "NM_MEMORY_MB=${NM_MEMORY_MB}"
+            echo "NM_VCORES=${NM_VCORES}"
+            echo "YARN_AM_RESOURCE_PERCENT=0.5"
+            echo "YARN_LOCAL_DIR_HOST=/mnt/yarn"
+            echo "SPARK_DRIVER_MEMORY=1g"
+            echo "SPARK_EXECUTOR_MEMORY=1g"
+            echo "SPARK_MAX_EXECUTORS=4"
+          } > infrastructure/azure/.env
+
+      - name: Configure SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.VM_SSH_PRIVATE_KEY }}
+          HOST: ${{ vars[matrix.host_var] }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          ssh-keyscan -H "$HOST" >> ~/.ssh/known_hosts
+
+      - name: Pull code on the VM, copy .env, restart stack
+        env:
+          HOST: ${{ vars[matrix.host_var] }}
+          VM_USER: ${{ vars.VM_USER }}
+          COMPOSE: ${{ matrix.compose }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          SSH="ssh -i $HOME/.ssh/id_deploy $VM_USER@$HOST"
+          AUTH=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
+
+          # stdin: 4 value lines (token header is never stored on the VM), then the script.
+          {
+            printf '%s\n' "$AUTH" "$REPO" "$APP_DIR" "$SHA"
+            cat <<'REMOTE'
+          set -euo pipefail
+          gh_git() { git -c "http.extraheader=Authorization: Basic $AUTH" "$@"; }
+          cd ~
+          [ -d "$APP/.git" ] || gh_git clone "https://github.com/$REPO.git" "$APP"
+          cd "$APP"
+          gh_git fetch --depth 1 origin "$SHA"
+          git checkout -q --force --detach FETCH_HEAD
+          git log -1 --oneline
+          REMOTE
+          } | $SSH 'read -r AUTH; read -r REPO; read -r APP; read -r SHA; export AUTH REPO APP SHA; bash -s'
+
+          scp -i "$HOME/.ssh/id_deploy" infrastructure/azure/.env \
+            "$VM_USER@$HOST:~/$APP_DIR/infrastructure/azure/.env"
+          $SSH "chmod 600 ~/$APP_DIR/infrastructure/azure/.env && cd ~/$APP_DIR/infrastructure/azure && docker compose -f $COMPOSE up -d --build"

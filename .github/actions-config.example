@@ -1,0 +1,36 @@
+# =============================================================================
+# GitHub Actions config for .github/workflows/deploy-azure.yml
+# Example only - do NOT put real values here. Set them in the repo:
+#   Settings -> Secrets and variables -> Actions
+# =============================================================================
+
+# ----- SECRETS (Settings -> Secrets and variables -> Actions -> Secrets) -----
+# Storage account key: Azure Portal -> Storage account -> Access keys -> key1
+AZURE_STORAGE_KEY=<storage-account-key>
+
+# Private key for SSH into both VMs (the public half is in ~/.ssh/authorized_keys
+# on sb-master and sb-worker-1). Paste the whole file including BEGIN/END lines.
+VM_SSH_PRIVATE_KEY=<contents-of-id_ed25519>
+
+# ----- VARIABLES (same page -> Variables tab) -----
+AZURE_STORAGE_ACCOUNT=dataplatform
+AZURE_STORAGE_CONTAINER=spark
+STORAGE_PREFIX=spark-bridge
+
+# Private VM name used inside the VNet (Azure DNS resolves it)
+MASTER_HOST=sb-master
+
+# Public IP / DNS the GitHub runner uses to SSH in
+MASTER_SSH_HOST=<master-public-ip>
+WORKER_SSH_HOST=<worker-public-ip>
+VM_USER=azureuser
+
+# ----- OPTIONAL VARIABLES -----
+# Match the worker VM size (B2ms = 6144/2, B4ms = 13312/4)
+NM_MEMORY_MB=6144
+NM_VCORES=2
+
+# key (default) or msi. With msi, also set the two below if the identity is user-assigned.
+AZURE_AUTH_MODE=key
+# AZURE_MSI_CLIENT_ID=
+# AZURE_TENANT_ID=
