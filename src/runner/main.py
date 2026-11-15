@@ -35,6 +35,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("livy_url", help="e.g. http://<master-ip>:8998")
     p.add_argument("storage", help="ADLS account name (e.g. dataplatform), or 'local' for the Codespaces volume")
     p.add_argument("path", help="<container>/<path/to/job.py>")
+    p.add_argument("--job-args", nargs="*", default=[], help="arguments passed to the job script, e.g. input and output paths")
     p.add_argument("--name", help="Spark app name (default: <job file name>-<timestamp>)")
     p.add_argument("--executors", type=int, help="number of executors")
     p.add_argument("--cores", type=int, help="cores per executor")
@@ -60,6 +61,7 @@ def main() -> None:
     job = client.submit_batch(
         file=job_uri,
         name=name,
+        args=a.job_args or None,
         num_executors=a.executors,
         executor_cores=a.cores,
         executor_memory=a.executor_memory,
